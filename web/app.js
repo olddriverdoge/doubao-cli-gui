@@ -111,6 +111,20 @@
       html += '<span class="stamp">' + formatTime(message.ts) + "</span>";
     }
     node.innerHTML = html;
+    if (message.role === "user" || message.role === "assistant") {
+      const copy = document.createElement("button");
+      copy.type = "button";
+      copy.className = "copy";
+      copy.textContent = "复制";
+      copy.addEventListener("click", () => {
+        if (navigator.clipboard) {
+          navigator.clipboard.writeText(message.text || "").then(() => toast("已复制")).catch(() => toast("复制失败"));
+        } else {
+          toast("这个环境没有剪贴板");
+        }
+      });
+      node.appendChild(copy);
+    }
     log.appendChild(node);
     scrollDown(force);
   }
@@ -294,6 +308,30 @@
       });
       body.appendChild(field("会话模式", mode));
 
+      const model = document.createElement("select");
+      const currentModel = config.model || "";
+      model.appendChild(new Option("默认（跟随 CLI）", ""));
+      if (currentModel) model.appendChild(new Option(currentModel, currentModel, true, true));
+      body.appendChild(field("模型 --model", model));
+      getJson("/api/models").then((result) => {
+        if (!result || !result.ok) return;
+        (result.models || []).forEach((item) => {
+          const id = item && item.id;
+          if (!id) return;
+          if (Array.from(model.options).some((option) => option.value === id)) return;
+          const label = item.name && item.name !== id ? item.name + " · " + id : id;
+          model.appendChild(new Option(label, id));
+        });
+      });
+
+      const reasoning = document.createElement("select");
+      [["", "默认"], ["low", "low · 省"], ["medium", "medium"], ["high", "high"], ["xhigh", "xhigh"], ["max", "max"]].forEach(([value, label]) => {
+        const option = new Option(label, value);
+        if ((config.reasoning || "") === value) option.selected = true;
+        reasoning.appendChild(option);
+      });
+      body.appendChild(field("推理档位 --reasoning", reasoning));
+
       const profile = document.createElement("input");
       profile.type = "text";
       profile.value = config.profile || "";
@@ -312,6 +350,8 @@
           permission: permission.value,
           mode: mode.value,
           profile: profile.value,
+          model: model.value,
+          reasoning: reasoning.value,
         });
         if (result.ok) { closeSheet(); toast("已保存"); }
       }));
@@ -331,6 +371,7 @@
       const foot = document.createElement("div");
       foot.className = "hint";
       foot.textContent = "服务只监听 127.0.0.1，同一 Wi-Fi 下的其他设备访问不到。";
+      if (data.version) foot.textContent += " · v" + data.version;
       body.appendChild(foot);
     });
   }
@@ -395,6 +436,23 @@
             if (switched.ok) { closeSheet(); toast("已切换"); }
           });
           body.appendChild(node);
+
+          const tools = document.createElement("div");
+          tools.className = "sess-tools";
+          const act = async (action, value, done) => {
+            const result = await post("/api/session/action", { action: action, id: row.id, value: value || "" });
+            if (!result.ok) return toast(result.error || "操作失败");
+            toast(done);
+          };
+          tools.appendChild(button(row.pinned ? "取消置顶" : "置顶", "mini", () => act(row.pinned ? "unpin" : "pin", "", "已更新")));
+          
+          tools.appendChild(button("重命名", "mini", () => {
+            const title = prompt("新的标题（最多 20 字）", row.title);
+            if (!title) return;
+            act("rename", title.trim(), "已重命名");
+          }));
+          tools.appendChild(button(row.archived ? "取消归档" : "归档", "mini", () => act(row.archived ? "unarchive" : "archive", "", "已更新")));
+          body.appendChild(tools);
         });
         if (!(result.sessions || []).length) {
           const empty = document.createElement("div");

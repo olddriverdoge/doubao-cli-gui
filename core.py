@@ -26,6 +26,8 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
+VERSION = "0.1.3"
+
 CONFIG_DIR = os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "doubao-cli-gui"
 )
@@ -39,6 +41,8 @@ DEFAULT_CONFIG = {
     "mode": "work",
     "permission": "ask_risky",
     "timeout": 600,
+    "model": "",
+    "reasoning": "",
     # 默认不自动放行任何审批：GUI 负责把每个审批交给用户确认，
     # 想省事就用审批卡上的“本轮都允许”。
     "auto_approve": [],
@@ -52,6 +56,11 @@ PERM_TO_CLI = {
     "AlwaysAsk": "AlwaysAsk",
     "FullAccess": "FullAccess",
 }
+REASONING_LEVELS = ("low", "medium", "high", "xhigh", "max")
+
+SESSION_MUTATIONS = ("rename", "pin", "unpin", "archive", "unarchive")
+SESSION_ID_RE = re.compile(r"^[1-9]\d{11,23}$")
+
 PERM_LABELS = {
     "ask_risky": "风险操作时确认",
     "ask_always": "始终确认",
@@ -79,6 +88,32 @@ def load_config() -> dict:
     if not config.get("workspace"):
         config["workspace"] = os.getcwd()
     return config
+
+
+def build_session_action(
+    bin_name: str, profile: str, action: str, conversation_id: str, value: str = ""
+) -> tuple:
+    """构造 sessions rename/pin/... 的命令，参数非法时返回 (None, 错误)。"""
+    action = (action or "").strip()
+    conversation_id = (conversation_id or "").strip()
+    value = (value or "").strip()
+    if action not in SESSION_MUTATIONS:
+        return None, "不支持的操作"
+    if not SESSION_ID_RE.match(conversation_id):
+        return None, "会话 ID 不合法"
+    if action == "rename":
+        if not value:
+            return None, "标题不能为空"
+        if len(value) > 20:
+            return None, "标题最多 20 个字"
+    elif value:
+        return None, "该操作不接受额外参数"
+    argv = [bin_name, "headless", "sessions", action, conversation_id]
+    if value:
+        argv.append(value)
+    if profile:
+        argv += ["--profile", str(profile)]
+    return argv, ""
 
 
 def save_config(config: dict) -> None:
@@ -146,6 +181,16 @@ class Runner:
         profile = self.config.get("profile")
         return ["--profile", str(profile)] if profile else []
 
+    def _model_flags(self) -> List[str]:
+        flags: List[str] = []
+        model = str(self.config.get("model") or "").strip()
+        if model:
+            flags += ["--model", model]
+        reasoning = str(self.config.get("reasoning") or "").strip()
+        if reasoning in REASONING_LEVELS:
+            flags += ["--reasoning", reasoning]
+        return flags
+
     def _wait_flags(self) -> List[str]:
         return ["--wait", "--timeout", str(int(self.config.get("timeout") or 600)), "--json"]
 
@@ -153,6 +198,7 @@ class Runner:
         argv = [self.config["bin"], "headless", "sessions", "create"]
         argv += ["--mode", str(self.config.get("mode") or "work")]
         argv += self._local_flags()
+        argv += self._model_flags()
         argv += self._profile_flags()
         argv += self._wait_flags()
         if message.startswith("-"):
@@ -163,6 +209,7 @@ class Runner:
     def build_send(self, conversation_id: str, message: str) -> List[str]:
         argv = [self.config["bin"], "headless", "sessions", "send", conversation_id]
         argv += self._local_flags()
+        argv += self._model_flags()
         argv += self._profile_flags()
         argv += self._wait_flags()
         if message.startswith("-"):
@@ -529,8 +576,11 @@ class Session:
             "elapsed": int(time.time() - self.started_at) if self.started_at else 0,
             "approval": self.approval,
             "messages": self.messages,
+            "version": VERSION,
             "config": {
                 "workspace": self.config.get("workspace"),
+                "model": self.config.get("model"),
+                "reasoning": self.config.get("reasoning"),
                 "permission": self.config.get("permission"),
                 "permissionLabel": PERM_LABELS.get(self.config.get("permission"), ""),
                 "mode": self.config.get("mode"),

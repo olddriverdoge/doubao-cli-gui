@@ -221,10 +221,14 @@ def scenario_static_and_queries() -> None:
         sessions = api(port, "GET", "/api/sessions")
         check("sessions 查询成功", sessions.get("ok") is True, str(sessions.get("error")))
         check("sessions 返回 2 条", len(sessions.get("sessions") or []) == 2)
+        check("sessions 带置顶标记", (sessions.get("sessions") or [{}])[0].get("pinned") is True)
 
         models = api(port, "GET", "/api/models")
         check("models 查询成功", models.get("ok") is True)
-        check("models 返回模型名", (models.get("models") or [""])[0] == "doubao-seed-2-0-pro")
+        first_model = (models.get("models") or [{}])[0]
+        check("models 返回结构化条目", first_model.get("id") == "doubao-seed-2-0-pro", str(first_model))
+        check("models 带选中标记", first_model.get("selected") is True)
+        check("models 带推理档位", models.get("reasoning") == "high")
 
         doctor = api(port, "GET", "/api/doctor")
         check("doctor 全绿", doctor.get("ok") is True, json.dumps(doctor.get("checks"), ensure_ascii=False))
@@ -359,6 +363,15 @@ def scenario_config_and_stop() -> None:
         broken = api(port, "POST", "/api/config", {"workspace": "/no/such/dir"})
         check("非法工作区被拒", broken.get("ok") is False)
 
+        tuned = api(port, "POST", "/api/config", {"model": "doubao-seed-2-0-pro", "reasoning": "high"})
+        check("模型写入成功", tuned.get("ok") is True, str(tuned.get("error")))
+        check("模型进入快照", tuned["data"]["config"]["model"] == "doubao-seed-2-0-pro")
+        check("推理档位进入快照", tuned["data"]["config"]["reasoning"] == "high")
+        check("快照带版本号", tuned["data"].get("version"))
+
+        bad_reasoning = api(port, "POST", "/api/config", {"reasoning": "ultra"})
+        check("非法推理档位被拒", bad_reasoning.get("ok") is False)
+
         api(port, "POST", "/api/send", {"text": "长任务"})
         stream.wait(lambda event: event["type"] == "status" and event["data"]["status"] == "approval", 15)
         stopped = api(port, "POST", "/api/stop", {})
@@ -370,10 +383,29 @@ def scenario_config_and_stop() -> None:
         check("空跑中止返回失败", no_task.get("ok") is False)
 
 
+def scenario_session_actions() -> None:
+    print("\n[5] 会话操作")
+    with Harness() as harness:
+        port = harness.port
+        renamed = api(port, "POST", "/api/session/action", {"action": "rename", "id": "38450000000000001", "value": "改名了"})
+        check("rename 成功", renamed.get("ok") is True, str(renamed.get("error")))
+        pinned = api(port, "POST", "/api/session/action", {"action": "pin", "id": "38450000000000002"})
+        check("pin 成功", pinned.get("ok") is True, str(pinned.get("error")))
+        archived = api(port, "POST", "/api/session/action", {"action": "archive", "id": "38450000000000002"})
+        check("archive 成功", archived.get("ok") is True, str(archived.get("error")))
+
+        bad_id = api(port, "POST", "/api/session/action", {"action": "pin", "id": "abc"})
+        check("非法 ID 被拒", bad_id.get("ok") is False)
+        empty = api(port, "POST", "/api/session/action", {"action": "rename", "id": "38450000000000001", "value": ""})
+        check("空标题被拒", empty.get("ok") is False)
+        unknown = api(port, "POST", "/api/session/action", {"action": "delete", "id": "38450000000000001"})
+        check("未知操作被拒", unknown.get("ok") is False)
+
+
 def main() -> int:
     print("doubao-cli-gui 端到端测试")
     print(f"服务端 {SERVER}")
-    for scenario in (scenario_static_and_queries, scenario_approval_flow, scenario_deny_and_resume, scenario_config_and_stop):
+    for scenario in (scenario_static_and_queries, scenario_approval_flow, scenario_deny_and_resume, scenario_config_and_stop, scenario_session_actions):
         try:
             scenario()
         except Exception as exc:

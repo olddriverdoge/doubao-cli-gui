@@ -96,10 +96,29 @@ def main(argv: list) -> int:
     workspace = parse_workspace(argv)
 
     if "sessions" in argv and "list" in argv:
-        out({"sessions": [{"id": CID, "title": "接管审计（mock）"}, {"id": "38450000000000002", "title": "脚手架冒烟"}], "currentId": CID})
+        out({
+            "sessions": [
+                {"id": CID, "title": "接管审计（mock）", "pinned": True, "archived": False},
+                {"id": "38450000000000002", "title": "脚手架冒烟", "pinned": False, "archived": False},
+            ],
+            "currentId": CID,
+        })
+        return 0
+    if "sessions" in argv and any(item in argv for item in ("rename", "pin", "unpin", "archive", "unarchive")):
+        action = next(item for item in argv if item in ("rename", "pin", "unpin", "archive", "unarchive"))
+        index = argv.index(action)
+        cid = argv[index + 1] if index + 1 < len(argv) else ""
+        title = argv[index + 2] if action == "rename" and index + 2 < len(argv) else ""
+        out({"ok": True, "action": action, "conversationId": cid, "title": title})
         return 0
     if "models" in argv:
-        out({"models": [{"name": "doubao-seed-2-0-pro", "reasoning": "high"}, {"name": "doubao-seed-2-0-lite", "reasoning": "off"}]})
+        out({
+            "models": [
+                {"id": "doubao-seed-2-0-pro", "name": "doubao-seed-2-0-pro", "selected": True},
+                {"id": "doubao-seed-2-0-lite", "name": "doubao-seed-2-0-lite", "selected": False},
+            ],
+            "reasoning": "high",
+        })
         return 0
     if "model" in argv and "select" in argv:
         pos = argv.index("select")

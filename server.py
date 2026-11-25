@@ -199,6 +199,8 @@ class Handler(BaseHTTPRequestHandler):
             self._json(self.session.new_session())
         elif path == "/api/config":
             self._json(self._update_config(payload))
+        elif path == "/api/session/action":
+            self._json(self._session_action(payload))
         elif path == "/api/shutdown":
             self._json({"ok": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
@@ -229,10 +231,35 @@ class Handler(BaseHTTPRequestHandler):
         if "profile" in payload:
             config["profile"] = str(payload["profile"] or "")
             changed = True
+        if "model" in payload:
+            config["model"] = str(payload["model"] or "").strip()
+            changed = True
+        if "reasoning" in payload:
+            value = str(payload["reasoning"] or "").strip()
+            if value and value not in core.REASONING_LEVELS:
+                return {"ok": False, "error": "推理档位不合法"}
+            config["reasoning"] = value
+            changed = True
         if changed:
             core.save_config(config)
             self.session.emit({"type": "snapshot", "data": self.session.snapshot()})
         return {"ok": True, "data": self.session.snapshot()}
+
+    def _session_action(self, payload: dict) -> dict:
+        config = self.session.config
+        argv, error = core.build_session_action(
+            config["bin"],
+            config.get("profile") or "",
+            str(payload.get("action") or ""),
+            str(payload.get("id") or ""),
+            str(payload.get("value") or ""),
+        )
+        if error:
+            return {"ok": False, "error": error}
+        code, stdout, stderr = self._cli(argv)
+        if code != 0:
+            return {"ok": False, "error": (stderr or stdout or "操作失败").strip()[:200]}
+        return {"ok": True, "detail": (stdout or "").strip()[:200]}
 
     # -- 只读查询
 
@@ -265,6 +292,8 @@ class Handler(BaseHTTPRequestHandler):
                     "id": str(row.get("id") or row.get("conversationId") or ""),
                     "title": row.get("title") or "未命名",
                     "updatedAt": row.get("updatedAt") or "",
+                    "pinned": bool(row.get("pinned")),
+                    "archived": row.get("archived") is True,
                 }
             )
         return {"ok": True, "sessions": rows, "currentId": self.session.conversation_id}
@@ -277,8 +306,19 @@ class Handler(BaseHTTPRequestHandler):
             data = json.loads(stdout or "{}")
         except Exception:
             return {"ok": False, "error": "返回格式无法解析"}
-        rows = data.get("models") or data.get("items") or []
-        return {"ok": True, "models": [row if isinstance(row, str) else row.get("name") or row.get("id") for row in rows]}
+        rows = []
+        for row in data.get("models") or data.get("items") or []:
+            if isinstance(row, str):
+                rows.append({"id": row, "name": row, "selected": False})
+            else:
+                rows.append(
+                    {
+                        "id": str(row.get("id") or row.get("name") or ""),
+                        "name": str(row.get("name") or row.get("id") or ""),
+                        "selected": bool(row.get("selected")),
+                    }
+                )
+        return {"ok": True, "models": rows, "reasoning": data.get("reasoning") or ""}
 
     def _doctor(self) -> dict:
         config = self.session.config
