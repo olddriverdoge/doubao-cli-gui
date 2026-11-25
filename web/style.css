@@ -16,6 +16,10 @@
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
+/* 关键：下面几个块都写了 display:flex，作者样式会盖掉 hidden 自带的
+   display:none，导致"隐藏"失效、遮罩关不掉。用一条规则把 hidden 拉回最高优先级。 */
+[hidden] { display: none !important; }
+
 html, body {
   margin: 0;
   height: 100%;

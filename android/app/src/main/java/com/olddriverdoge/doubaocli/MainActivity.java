@@ -106,11 +106,17 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (web != null && web.canGoBack()) {
-            web.goBack();
-        } else {
+        if (web == null) {
             super.onBackPressed();
+            return;
         }
+        web.evaluateJavascript("(typeof window.__sheetOpen === 'function') && window.__sheetOpen()", value -> {
+            if ("true".equals(value)) {
+                web.evaluateJavascript("window.__closeSheet && window.__closeSheet()", null);
+            } else {
+                finish();
+            }
+        });
     }
 
     @Override

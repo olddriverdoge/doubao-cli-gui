@@ -230,7 +230,14 @@
 
   function closeSheet() {
     sheet.hidden = true;
+    sheetBody.innerHTML = "";
   }
+
+  // 给 Android 返回键用：面板开着就先关面板
+  window.__sheetOpen = function () {
+    return !sheet.hidden;
+  };
+  window.__closeSheet = closeSheet;
 
   sheet.addEventListener("click", (event) => {
     if (event.target.hasAttribute("data-close")) closeSheet();
