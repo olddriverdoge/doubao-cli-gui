@@ -28,11 +28,20 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: 装 platform 35 与 build-tools
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools"
+      - name: Android SDK 组件
+        env:
+          ANDROID_HOME: /usr/local/lib/android/sdk
+          ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+        run: |
+          set -e
+          if ! command -v sdkmanager >/dev/null 2>&1; then
+            latest=$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin 2>/dev/null | head -1)
+            export PATH="$latest:$PATH"
+          fi
+          sdkmanager --version
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools"
+          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
 
       - name: Gradle 8.9
         uses: gradle/actions/setup-gradle@v4
