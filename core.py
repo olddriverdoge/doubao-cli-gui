@@ -127,26 +127,47 @@ class Runner:
 
     # -- 命令构建
 
-    def _common(self) -> List[str]:
+    def _local_flags(self) -> List[str]:
+        """本地运行时相关参数。
+
+        headless 的 chat 模式走云端，明确禁止带 --runtime / --workspace /
+        --permission（CLI 会报 “requires --mode work”），所以按 mode 分开拼。
+        """
         config = self.config
-        argv = ["--runtime", "local"]
-        argv += ["--workspace", config.get("workspace") or os.getcwd()]
-        argv += ["--permission", PERM_TO_CLI.get(str(config.get("permission")), "AskOnRisk")]
-        if config.get("profile"):
-            argv += ["--profile", str(config["profile"])]
-        return argv
+        if str(config.get("mode") or "work") == "chat":
+            return []
+        return [
+            "--runtime", "local",
+            "--workspace", config.get("workspace") or os.getcwd(),
+            "--permission", PERM_TO_CLI.get(str(config.get("permission")), "AskOnRisk"),
+        ]
+
+    def _profile_flags(self) -> List[str]:
+        profile = self.config.get("profile")
+        return ["--profile", str(profile)] if profile else []
+
+    def _wait_flags(self) -> List[str]:
+        return ["--wait", "--timeout", str(int(self.config.get("timeout") or 600)), "--json"]
 
     def build_create(self, message: str) -> List[str]:
-        argv = [self.config["bin"], "headless", "sessions", "create", message]
+        argv = [self.config["bin"], "headless", "sessions", "create"]
         argv += ["--mode", str(self.config.get("mode") or "work")]
-        argv += self._common()
-        argv += ["--wait", "--timeout", str(int(self.config.get("timeout") or 600)), "--json"]
+        argv += self._local_flags()
+        argv += self._profile_flags()
+        argv += self._wait_flags()
+        if message.startswith("-"):
+            argv.append("--")  # 防止以短横线开头的消息被当成选项
+        argv.append(message)
         return argv
 
     def build_send(self, conversation_id: str, message: str) -> List[str]:
-        argv = [self.config["bin"], "headless", "sessions", "send", conversation_id, message]
-        argv += self._common()
-        argv += ["--wait", "--timeout", str(int(self.config.get("timeout") or 600)), "--json"]
+        argv = [self.config["bin"], "headless", "sessions", "send", conversation_id]
+        argv += self._local_flags()
+        argv += self._profile_flags()
+        argv += self._wait_flags()
+        if message.startswith("-"):
+            argv.append("--")
+        argv.append(message)
         return argv
 
     # -- 启动与收尾

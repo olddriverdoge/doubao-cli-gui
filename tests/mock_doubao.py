@@ -51,6 +51,31 @@ def receipt(answer: str) -> None:
         json.dump({"conversationId": CID, "runId": RID, "answer": answer, "status": "running"}, handle, ensure_ascii=False)
 
 
+VALUE_FLAGS = {
+    "--mode", "--model", "--reasoning", "--timeout", "--workspace",
+    "--permission", "--profile", "--run", "--limit", "--mcp", "--project",
+}
+
+
+def positionals(argv: list) -> list:
+    """跳过选项及其取值，剩下的就是位置参数。"""
+    result = []
+    skip_next = False
+    for token in argv:
+        if skip_next:
+            skip_next = False
+            continue
+        if token == "--":
+            continue
+        if token in VALUE_FLAGS:
+            skip_next = True
+            continue
+        if token.startswith("-"):
+            continue
+        result.append(token)
+    return result
+
+
 def parse_workspace(argv: list) -> str:
     for index, item in enumerate(argv):
         if item in ("--workspace", "-C") and index + 1 < len(argv):
@@ -59,13 +84,12 @@ def parse_workspace(argv: list) -> str:
 
 
 def parse_message(argv: list) -> str:
-    if "create" in argv:
-        pos = argv.index("create")
-        return argv[pos + 1] if pos + 1 < len(argv) else ""
-    if "send" in argv:
-        pos = argv.index("send")
-        return argv[pos + 2] if pos + 2 < len(argv) else ""
-    return ""
+    row = positionals(argv)
+    if "sessions" in row:
+        index = row.index("sessions")
+        row = row[index + 1 :]
+    # [create, <message>] / [send, <conversation-id>, <message>]
+    return row[-1] if len(row) >= 2 else ""
 
 
 def main(argv: list) -> int:
