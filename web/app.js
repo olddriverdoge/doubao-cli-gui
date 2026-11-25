@@ -10,6 +10,9 @@
   const timerEl = document.getElementById("timer");
   const cidEl = document.getElementById("cid");
   const approvalBox = document.getElementById("approval");
+  const offlineBox = document.getElementById("offline");
+  const bootBtn = document.getElementById("boot");
+  const retryBtn = document.getElementById("retry");
   const apRisk = document.getElementById("ap-risk");
   const apOp = document.getElementById("ap-op");
   const apMeta = document.getElementById("ap-meta");
@@ -21,7 +24,8 @@
   const sheetBody = document.getElementById("sheet-body");
   const toastEl = document.getElementById("toast");
 
-  const state = { status: "idle", phase: "空闲", approval: null, cid: "", rendered: new Set() };
+  const state = { status: "idle", phase: "空闲", approval: null, cid: "", rendered: new Set(), offline: false };
+  let nativeMode = false;
   let toastTimer = 0;
 
   // ------------------------------------------------------------ 工具
@@ -119,6 +123,7 @@
   function applyStatus(data) {
     state.status = data.status || "idle";
     state.phase = data.phase || "";
+    state.offline = !!data.offline;
     state.approval = data.approval || null;
     if (data.conversationId !== undefined) {
       state.cid = data.conversationId || "";
@@ -130,6 +135,11 @@
     sendBtn.disabled = running;
     stopBtn.hidden = !running;
     renderApproval();
+    syncOffline();
+  }
+
+  function syncOffline() {
+    offlineBox.hidden = !(nativeMode && state.offline);
   }
 
   function renderApproval() {
@@ -421,7 +431,56 @@
 
   document.getElementById("menu").addEventListener("click", openSettings);
 
+  function bootHint(detail) {
+    if (detail === "termux-missing") return "没检测到 Termux，先装 Termux 并跑 install.sh";
+    if (detail === "no-java") return "浏览器版不需要启动服务";
+    if (detail && String(detail).indexOf("error") === 0) return "Termux 拒绝执行，检查设置里的 allow-external-apps";
+    return "启动请求没成功：" + (detail || "未知原因");
+  }
+
+  async function waitForUpstream(attempt) {
+    if (attempt > 12) {
+      toast("还没起来，去 Termux 跑 doubao-gui logs 看看");
+      bootBtn.disabled = false;
+      bootBtn.textContent = "启动服务";
+      return;
+    }
+    const status = await getJson("/app/status");
+    if (status && status.ok) {
+      bootBtn.disabled = false;
+      bootBtn.textContent = "启动服务";
+      toast("已连上");
+      return;
+    }
+    setTimeout(() => waitForUpstream(attempt + 1), 1200);
+  }
+
+  bootBtn.addEventListener("click", async () => {
+    bootBtn.disabled = true;
+    bootBtn.textContent = "启动中…";
+    const result = await post("/app/boot", {});
+    if (result && result.ok) {
+      toast("已通知 Termux 启动，等它一会儿");
+      waitForUpstream(0);
+    } else {
+      toast(bootHint(result && result.detail));
+      bootBtn.disabled = false;
+      bootBtn.textContent = "启动服务";
+    }
+  });
+
+  retryBtn.addEventListener("click", () => location.reload());
+
   // ------------------------------------------------------------ 启动
+
+  // APK 壳里才有这个接口；浏览器版拿不到，也就不会出现“启动服务”那一条
+  fetch("/app/available")
+    .then((response) => (response.ok ? response.json() : null))
+    .then((data) => {
+      nativeMode = !!(data && data.ok);
+      syncOffline();
+    })
+    .catch(() => {});
 
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(() => {});

@@ -87,6 +87,28 @@ Termux 要 `termux-wake-lock`，并在系统设置里关掉 Termux 的电池优�
 **端口被占**
 `DOUBAO_GUI_PORT=8766 doubao-gui start`。
 
+## Android APK
+
+`android/` 是独立 Gradle 工程：Java 17 + compileSdk/targetSdk 35 + WebView 壳 + Chaquopy 内嵌 Python 3.13 + Starlette。
+
+它的定位不是"把 CLI 打进安装包"，而是**原生外壳 + 网关**：
+
+- App 内 Python 起 `127.0.0.1:8790`，把打包进 APK 的前端页面发出去
+- `/api/*` 反代到 Termux 里的 `127.0.0.1:8765`，SSE 一起转发，所以前端代码同一套
+- Termux 服务没起时，界面不白屏：显示"服务未启动"，点一下通过 Termux 的 `RUN_COMMAND` 接口拉起 `doubao-gui start`
+
+为什么不把 `doubao-cli` 塞进 APK：它是 Node 程序，运行要 node 20+ 和已登录的 profile，而登录态绑设备、协议是逆向的。App 沙箱里没有这套运行时，硬塞等于重打包 node + 重做登录，收益不抵成本。
+
+构建完全在 GitHub Actions 里做（`.github/workflows/build-apk.yml`）：push 到 main 或手动触发，跑完在 Actions 的 Artifacts 下 `doubao-cli-gui-debug-apk`。debug 签名，可直接侧载；minSdk 24，ABI 只带 arm64-v8a / armeabi-v7a。
+
+本地构建需要 JDK 17、Android SDK 35、Python 3.13：
+
+```bash
+cd android
+cp -r ../web app/src/main/python/web
+gradle assembleDebug
+```
+
 ## 开发与测试
 
 ```bash

@@ -13,10 +13,16 @@ jobs:
         with:
           python-version: "3.12"
       - name: 语法检查
-        run: python3 -m py_compile core.py server.py tools/make_icons.py tests/mock_doubao.py tests/test_api.py
+        run: python3 -m py_compile core.py server.py tools/make_icons.py tests/mock_doubao.py tests/test_api.py tests/test_argv.py android/app/src/main/python/gateway.py
       - name: 参数契约
         run: python3 tests/test_argv.py
       - name: 端到端测试
         run: python3 tests/test_api.py
+      - name: 网关依赖
+        run: pip install "starlette==0.41.3" "uvicorn==0.32.1" "httpx==0.27.2"
+      - name: 网关反代测试
+        run: |
+          cp -r web android/app/src/main/python/web
+          python3 tests/test_gateway.py
       - name: 图标可复现
         run: python3 tools/make_icons.py && git diff --exit-code -- web/icon-192.png web/icon-512.png

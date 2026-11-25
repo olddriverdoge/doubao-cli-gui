@@ -30,6 +30,15 @@
   <main id="log" class="log"></main>
 
   <div id="dock" class="dock">
+    <div id="offline" class="offline" hidden>
+      <div class="offline-text">Termux 里的服务没在跑，现在只是个空壳。</div>
+      <div class="offline-actions">
+        <button id="boot" class="btn primary">启动服务</button>
+        <button id="retry" class="btn ghost">重试</button>
+      </div>
+      <div class="offline-hint">第一次用要先在 Termux 跑过 install.sh，并打开 Termux 设置里的 allow-external-apps。</div>
+    </div>
+
     <div id="approval" class="approval" hidden>
       <div class="approval-head">
         <span class="tag">待审批</span>

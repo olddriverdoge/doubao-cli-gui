@@ -160,6 +160,20 @@ html, body {
   background: linear-gradient(180deg, rgba(11,13,17,0) 0%, var(--bg) 22%);
 }
 
+.offline {
+  border: 1px solid #40312a;
+  background: #191410;
+  border-radius: 14px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.offline-text { font-size: 13.5px; color: #ffd7b0; }
+.offline-actions { display: flex; gap: 8px; }
+.offline-actions .btn { flex: 1; }
+.offline-hint { font-size: 11.5px; color: var(--muted); line-height: 1.45; }
+
 .approval {
   border: 1px solid #4a3a18;
   background: #191307;
