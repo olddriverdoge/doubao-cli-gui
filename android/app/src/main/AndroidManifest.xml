@@ -4,10 +4,17 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- 调用 Termux 的 RUN_COMMAND 必须持有这个由 Termux 定义的权限 -->
+    <uses-permission android:name="com.termux.permission.RUN_COMMAND" />
 
-    <!-- Android 11+ 要显式声明才能看到 Termux 是否安装 -->
+    <!-- Android 11+ 要显式声明可见性：Termux 本体，以及任何声明了 RUN_COMMAND 的衍生版 -->
     <queries>
         <package android:name="com.termux" />
+        <package android:name="com.zerotermux" />
+        <package android:name="com.termux.zerotermux" />
+        <intent>
+            <action android:name="com.termux.RUN_COMMAND" />
+        </intent>
     </queries>
 
     <application

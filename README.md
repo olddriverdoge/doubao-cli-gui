@@ -101,12 +101,27 @@ Termux 要 `termux-wake-lock`，并在系统设置里关掉 Termux 的电池优�
 
 构建完全在 GitHub Actions 里做（`.github/workflows/build-apk.yml`）：push 到 main 或手动触发，跑完在 Actions 的 Artifacts 下 `doubao-cli-gui-debug-apk`。debug 签名，可直接侧载；minSdk 24，只带 arm64-v8a（Chaquopy 17 的 Python 3.13 已无 32 位制品）。
 
-装完第一次打开会停在「Termux 服务未启动」，两件事各做一次就通了：
+装完第一次打开会停在「Termux 服务未启动」，三件事各做一次就通了：
 
 1. Termux 里 `bash ~/doubao-cli-gui/install.sh`（有 `doubao-gui` 命令）
-2. Termux 设置里打开 `allow-external-apps`
+2. `allow-external-apps=true` 写进 `~/.termux/termux.properties`（Termux 设置界面里**没有**这个开关）
+3. 系统设置给「豆包 CLI」授予「在 Termux 中执行命令」权限（首次打开 App 会弹一次）
 
 之后点界面上的「启动服务」，App 会通过 `RUN_COMMAND` 拉起 `doubao-gui start`，3 秒内自动接上。
+
+### ZeroTermux / 衍生版
+
+ZeroTermux 没有设置界面里的开关，直接写配置文件，一条命令搞定：
+
+```bash
+mkdir -p ~/.termux
+grep -q '^allow-external-apps=true' ~/.termux/termux.properties 2>/dev/null || echo 'allow-external-apps=true' >> ~/.termux/termux.properties
+termux-reload-settings 2>/dev/null || echo "没有 termux-reload-settings，就完全退出 Termux 再打开"
+```
+
+APK 不再硬编码 `com.termux`，而是按 `com.termux.RUN_COMMAND` 这个 action 去找当前设备上真正声明了它的那个 App，所以 ZeroTermux 换了包名也能命中。
+
+如果它连 `RunCommandService` 都没保留，点「启动服务」会提示 `termux-missing`：这时用界面上的「复制启动命令」，去 Termux 里粘贴 `doubao-gui start`。一样能用，只是少了「一键」。
 
 本地构建需要 JDK 17、Android SDK 35、Python 3.13：
 

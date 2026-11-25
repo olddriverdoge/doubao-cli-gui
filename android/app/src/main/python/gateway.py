@@ -71,13 +71,13 @@ async def probe_state(timeout: float = 2.0):
         return None
 
 
-def termux_installed():
+def termux_state():
     try:
         from java import jclass
 
         python_class = jclass("com.chaquo.python.Python")
         context = python_class.getPlatform().getApplication()
-        return bool(jclass("com.olddriverdoge.doubaocli.TermuxBridge").installed(context))
+        return str(jclass("com.olddriverdoge.doubaocli.TermuxBridge").describe(context))
     except Exception:
         return None
 
@@ -158,7 +158,7 @@ def _offline_events(reason: str) -> StreamingResponse:
 
 
 async def app_available(request):
-    return JSONResponse({"ok": True, "upstream": upstream_base(), "termuxInstalled": termux_installed()})
+    return JSONResponse({"ok": True, "upstream": upstream_base(), "termux": termux_state()})
 
 
 async def app_status(request):
@@ -166,7 +166,7 @@ async def app_status(request):
     return JSONResponse({
         "ok": state is not None,
         "upstream": upstream_base(),
-        "termuxInstalled": termux_installed(),
+        "termux": termux_state(),
         "state": state,
     })
 
@@ -176,10 +176,27 @@ async def app_boot(request):
     return JSONResponse({"ok": detail == "sent", "detail": detail})
 
 
+def open_termux_app() -> str:
+    try:
+        from java import jclass
+
+        python_class = jclass("com.chaquo.python.Python")
+        context = python_class.getPlatform().getApplication()
+        return str(jclass("com.olddriverdoge.doubaocli.TermuxBridge").openApp(context))
+    except Exception as error:
+        return "no-java:" + type(error).__name__
+
+
+async def app_open_termux(request):
+    detail = open_termux_app()
+    return JSONResponse({"ok": detail.startswith("opened"), "detail": detail})
+
+
 routes = [
     Route("/app/available", app_available),
     Route("/app/status", app_status),
     Route("/app/boot", app_boot, methods=["POST", "GET"]),
+    Route("/app/open-termux", app_open_termux, methods=["POST", "GET"]),
     Route("/api/{path:path}", api_proxy, methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"]),
 ]
 

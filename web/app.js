@@ -12,6 +12,8 @@
   const approvalBox = document.getElementById("approval");
   const offlineBox = document.getElementById("offline");
   const bootBtn = document.getElementById("boot");
+  const openTermuxBtn = document.getElementById("opentermux");
+  const copyCmdBtn = document.getElementById("copycmd");
   const retryBtn = document.getElementById("retry");
   const apRisk = document.getElementById("ap-risk");
   const apOp = document.getElementById("ap-op");
@@ -439,11 +441,28 @@
   document.getElementById("menu").addEventListener("click", openSettings);
 
   function bootHint(detail) {
-    if (detail === "termux-missing") return "没检测到 Termux，先装 Termux 并跑 install.sh";
+    if (detail === "termux-missing") return "没找到 Termux 的 RUN_COMMAND 服务，用「复制启动命令」手动跑";
+    if (detail === "permission-denied") return "去系统设置给「豆包 CLI」授予「在 Termux 中执行命令」权限";
     if (detail === "no-java") return "浏览器版不需要启动服务";
-    if (detail && String(detail).indexOf("error") === 0) return "Termux 拒绝执行，检查设置里的 allow-external-apps";
+    if (detail && String(detail).indexOf("error") === 0) return "Termux 拒绝执行：先确认 allow-external-apps=true 并重启 Termux";
     return "启动请求没成功：" + (detail || "未知原因");
   }
+
+  const BOOT_COMMAND = "doubao-gui start";
+
+  copyCmdBtn.addEventListener("click", () => {
+    const done = () => toast("已复制，去 Termux 粘贴执行");
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(BOOT_COMMAND).then(done).catch(() => toast(BOOT_COMMAND));
+    } else {
+      toast(BOOT_COMMAND);
+    }
+  });
+
+  openTermuxBtn.addEventListener("click", async () => {
+    const result = await post("/app/open-termux", {});
+    if (!result || !result.ok) toast("没打开：" + ((result && result.detail) || "未知原因"));
+  });
 
   async function waitForUpstream(attempt) {
     if (attempt > 12) {

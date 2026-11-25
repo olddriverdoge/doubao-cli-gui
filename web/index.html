@@ -34,9 +34,13 @@
       <div class="offline-text">Termux 里的服务没在跑，现在只是个空壳。</div>
       <div class="offline-actions">
         <button id="boot" class="btn primary">启动服务</button>
+        <button id="opentermux" class="btn soft">打开 Termux</button>
+      </div>
+      <div class="offline-actions">
+        <button id="copycmd" class="btn ghost">复制启动命令</button>
         <button id="retry" class="btn ghost">重试</button>
       </div>
-      <div class="offline-hint">第一次用要先在 Termux 跑过 install.sh，并打开 Termux 设置里的 allow-external-apps。</div>
+      <div class="offline-hint">一键启动要两个条件：<br>1. Termux 设置文件里 allow-external-apps=true<br>2. 系统设置里给本 App 授予「在 Termux 中执行命令」权限<br>都不行就点「复制启动命令」，去 Termux 里粘贴执行。</div>
     </div>
 
     <div id="approval" class="approval" hidden>

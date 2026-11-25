@@ -45,7 +45,18 @@ public class MainActivity extends Activity {
         web.setWebViewClient(new WebViewClient());
         setContentView(web);
 
+        ensureTermuxPermission();
         startGateway();
+    }
+
+    /** RUN_COMMAND 需要运行时授权；Termux 没装时申请也无害。 */
+    private void ensureTermuxPermission() {
+        try {
+            if (TermuxBridge.installed(this) && !TermuxBridge.hasPermission(this)) {
+                requestPermissions(new String[]{"com.termux.permission.RUN_COMMAND"}, 7);
+            }
+        } catch (Exception ignored) {
+        }
     }
 
     private void startGateway() {
