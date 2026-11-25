@@ -26,7 +26,7 @@
   const sheetBody = document.getElementById("sheet-body");
   const toastEl = document.getElementById("toast");
 
-  const state = { status: "idle", phase: "空闲", approval: null, cid: "", rendered: new Set(), offline: false };
+  const state = { status: "idle", phase: "空闲", approval: null, cid: "", rendered: new Set(), offline: false, appVersion: "" };
   let nativeMode = false;
   let toastTimer = 0;
 
@@ -371,7 +371,10 @@
       const foot = document.createElement("div");
       foot.className = "hint";
       foot.textContent = "服务只监听 127.0.0.1，同一 Wi-Fi 下的其他设备访问不到。";
-      if (data.version) foot.textContent += " · v" + data.version;
+      const parts = [];
+      if (state.appVersion) parts.push("App v" + state.appVersion);
+      if (data.version) parts.push("服务 v" + data.version);
+      if (parts.length) foot.textContent += " · " + parts.join(" · ");
       body.appendChild(foot);
     });
   }
@@ -562,6 +565,7 @@
     .then((response) => (response.ok ? response.json() : null))
     .then((data) => {
       nativeMode = !!(data && data.ok);
+      state.appVersion = (data && data.appVersion) || "";
       syncOffline();
     })
     .catch(() => {});

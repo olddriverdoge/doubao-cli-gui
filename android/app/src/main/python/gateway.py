@@ -71,6 +71,18 @@ async def probe_state(timeout: float = 2.0):
         return None
 
 
+def app_version() -> str:
+    try:
+        from java import jclass
+
+        python_class = jclass("com.chaquo.python.Python")
+        context = python_class.getPlatform().getApplication()
+        info = context.getPackageManager().getPackageInfo(context.getPackageName(), 0)
+        return str(info.versionName)
+    except Exception:
+        return ""
+
+
 def termux_state():
     try:
         from java import jclass
@@ -158,7 +170,12 @@ def _offline_events(reason: str) -> StreamingResponse:
 
 
 async def app_available(request):
-    return JSONResponse({"ok": True, "upstream": upstream_base(), "termux": termux_state()})
+    return JSONResponse({
+        "ok": True,
+        "upstream": upstream_base(),
+        "termux": termux_state(),
+        "appVersion": app_version(),
+    })
 
 
 async def app_status(request):
@@ -167,6 +184,7 @@ async def app_status(request):
         "ok": state is not None,
         "upstream": upstream_base(),
         "termux": termux_state(),
+        "appVersion": app_version(),
         "state": state,
     })
 

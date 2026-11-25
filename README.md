@@ -25,19 +25,34 @@ doubao headless sessions create|send|wait …（stdin/stderr 接 pty）
 
 所以它需要 Termux 里具备：node 20+、`doubao-cli`、有效的登录 profile。
 
-## 安装
+## 安装（Termux 两条命令）
 
 ```bash
-# Termux 里
-pkg install python nodejs
-npm i -g doubao-cli@0.23.3
-doubao headless login --profile termux
+# 一键安装：自己装 python/node、装 CLI、铺代码、挂命令和桌面快捷方式
+curl -fsSL https://raw.githubusercontent.com/olddriverdoge/doubao-cli-gui/main/install.sh | bash
 
-# 拿到本项目后
-bash install.sh
+# 一键运行：起服务并打开界面
+doubao-gui run
 ```
 
-`install.sh` 会做四件事：检查 python/node、缺 CLI 就装、复制到 `~/doubao-cli-gui`、在 `$PREFIX/bin` 放 `doubao-gui` 命令、在 `~/.shortcuts/` 生成 `豆包CLI.sh`。
+第一条可以重复跑，等于升级到最新代码；`DOUBAO_GUI_HOME`、`DOUBAO_GUI_BRANCH`、`DOUBAO_GUI_CLI_VERSION` 可覆盖默认值。
+
+装完以后的常用命令：
+
+```bash
+doubao-gui start     # 后台起服务（默认 127.0.0.1:8765）
+doubao-gui status    # 看有没有在跑
+doubao-gui logs      # 跟日志
+doubao-gui restart   # 改完代码重载
+```
+
+如果还没登录，装完执行：
+
+```bash
+doubao headless login --profile termux
+```
+
+`install.sh` 做这些事：缺 python/node 就 `pkg install`、缺 CLI 就 `npm i -g`、把代码铺到 `~/doubao-cli-gui`、在 `$PREFIX/bin` 放 `doubao-gui`、在 `~/.shortcuts/` 生成 `豆包CLI.sh`、最后自检起停一次。
 
 ## 使用
 
