@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""测试用假 doubao CLI：复刻 headless 会话的审批与输出协议。
+
+真 CLI 的关键行为：
+1) 在 stderr（必须是 TTY）打印 `[local runtime: ...] Approve ...? [y/N] `，然后读一行；
+2) 结束时在 stdout 打印最外层 JSON 回执。
+本脚本按同一协议工作，供离线端到端测试使用。
+
+环境变量：
+  MOCK_SLEEP     每个审批之间/结束前的等待秒数，默认 0.05
+  MOCK_SKIP      设为 1 时跳过审批直接返回
+  MOCK_STATUS    回执里的 status，默认 completed
+  MOCK_ANSWER    覆盖回复文本
+"""
+
+import json
+import os
+import sys
+import time
+
+CID = "38450000000000001"
+RID = "63060000000000001"
+
+SLEEP = float(os.environ.get("MOCK_SLEEP") or "0.05")
+SKIP = os.environ.get("MOCK_SKIP") == "1"
+STATUS = os.environ.get("MOCK_STATUS") or "completed"
+
+
+def err(text: str) -> None:
+    sys.stderr.write(text)
+    sys.stderr.flush()
+
+
+def ask(prompt: str) -> bool:
+    err(prompt)
+    line = sys.stdin.readline()
+    return line.strip().lower() in ("y", "yes")
+
+
+def out(payload: dict) -> None:
+    sys.stdout.write(json.dumps(payload, ensure_ascii=False))
+    sys.stdout.flush()
+
+
+def receipt(answer: str) -> None:
+    conf = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    directory = os.path.join(conf, "doubao-cli", "turns", "mock")
+    os.makedirs(directory, exist_ok=True)
+    with open(os.path.join(directory, f"{CID}-{RID}.json"), "w", encoding="utf-8") as handle:
+        json.dump({"conversationId": CID, "runId": RID, "answer": answer, "status": "running"}, handle, ensure_ascii=False)
+
+
+def parse_workspace(argv: list) -> str:
+    for index, item in enumerate(argv):
+        if item in ("--workspace", "-C") and index + 1 < len(argv):
+            return argv[index + 1]
+    return "/tmp"
+
+
+def parse_message(argv: list) -> str:
+    if "create" in argv:
+        pos = argv.index("create")
+        return argv[pos + 1] if pos + 1 < len(argv) else ""
+    if "send" in argv:
+        pos = argv.index("send")
+        return argv[pos + 2] if pos + 2 < len(argv) else ""
+    return ""
+
+
+def main(argv: list) -> int:
+    workspace = parse_workspace(argv)
+
+    if "sessions" in argv and "list" in argv:
+        out({"sessions": [{"id": CID, "title": "接管审计（mock）"}, {"id": "38450000000000002", "title": "脚手架冒烟"}], "currentId": CID})
+        return 0
+    if "models" in argv:
+        out({"models": [{"name": "doubao-seed-2-0-pro", "reasoning": "high"}, {"name": "doubao-seed-2-0-lite", "reasoning": "off"}]})
+        return 0
+    if "model" in argv and "select" in argv:
+        pos = argv.index("select")
+        out({"model": argv[pos + 1] if pos + 1 < len(argv) else "", "changed": True})
+        return 0
+    if "status" in argv:
+        out({"loggedIn": True, "accountId": "1342919234290264"})
+        return 0
+    if "runtimes" in argv:
+        out({"runtimes": [{"name": "local", "available": True, "engine": "node-http-sse", "hostPlatform": "android"}]})
+        return 0
+
+    if "wait" in argv:
+        pos = argv.index("wait")
+        cid = argv[pos + 1] if pos + 1 < len(argv) else CID
+        err("[mock] waiting run\n")
+        time.sleep(SLEEP * 4)
+        out({"platform": "headless", "conversationId": cid, "runId": RID, "status": "completed", "accepted": True, "reply": {"text": "续等拿到结果（mock）。"}})
+        return 0
+
+    message = parse_message(argv)
+    err("[mock] accepted, provisioning local runtime\n")
+    time.sleep(SLEEP)
+
+    if not SKIP:
+        steps = [
+            ("local.workspace.apply", "ensure_dir", "docs", "ensured docs/"),
+            ("local.workspace.apply", "write_file", "docs/TAKEOVER.md", "writing docs/TAKEOVER.md"),
+            ("Bash", "ls -la src", "src", "listing src"),
+        ]
+        for tool, operation, target, note in steps:
+            if not ask(f"\n[local runtime: AskOnRisk; approval-required] Approve {tool}: {operation} ({target}); cwd {workspace}? [y/N] "):
+                out({"conversationId": CID, "runId": RID, "status": "failed", "error": "denied"})
+                return 1
+            err(f"[mock] {note}\n")
+            receipt(f"步骤完成：{note}")
+            time.sleep(SLEEP)
+
+    answer = os.environ.get("MOCK_ANSWER") or (
+        f"接管审计完成（mock）。\n收到消息：{message[:40]}\n"
+        "已确认仓库根是项目目录，docs/TAKEOVER.md 已生成。"
+    )
+    out(
+        {
+            "platform": "headless",
+            "mode": "work",
+            "conversationId": CID,
+            "runId": RID,
+            "status": STATUS,
+            "accepted": True,
+            "reply": {"text": answer},
+        }
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

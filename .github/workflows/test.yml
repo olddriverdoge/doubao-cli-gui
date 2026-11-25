@@ -1,0 +1,20 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 语法检查
+        run: python3 -m py_compile core.py server.py tools/make_icons.py tests/mock_doubao.py tests/test_api.py
+      - name: 端到端测试
+        run: python3 tests/test_api.py
+      - name: 图标可复现
+        run: python3 tools/make_icons.py && git diff --exit-code -- web/icon-192.png web/icon-512.png

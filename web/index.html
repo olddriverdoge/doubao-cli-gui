@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>豆包 CLI</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#0b0d11">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<div id="app">
+  <header id="bar">
+    <div class="bar-left">
+      <span id="dot" class="dot"></span>
+      <span id="phase" class="phase">空闲</span>
+      <span id="timer" class="timer"></span>
+    </div>
+    <div class="bar-right">
+      <span id="cid" class="cid">无会话</span>
+      <button id="menu" class="icon-btn" aria-label="设置">⋯</button>
+    </div>
+  </header>
+
+  <main id="log" class="log"></main>
+
+  <div id="dock" class="dock">
+    <div id="approval" class="approval" hidden>
+      <div class="approval-head">
+        <span class="tag">待审批</span>
+        <span id="ap-risk" class="risk"></span>
+      </div>
+      <div id="ap-op" class="approval-op"></div>
+      <div id="ap-meta" class="approval-meta"></div>
+      <div class="approval-actions">
+        <button id="ap-deny" class="btn ghost">拒绝</button>
+        <button id="ap-once" class="btn primary">允许一次</button>
+        <button id="ap-turn" class="btn soft">本轮都允许</button>
+      </div>
+    </div>
+
+    <div class="quick">
+      <button class="chip" data-act="new">＋ 新会话</button>
+      <button class="chip" data-act="resume">⟳ 续等</button>
+      <button class="chip" data-act="sessions">☰ 会话</button>
+      <button class="chip" data-act="files">⧉ 文件</button>
+      <button class="chip" data-act="settings">⚙ 设置</button>
+    </div>
+
+    <div class="composer">
+      <textarea id="input" rows="1" placeholder="给豆包发消息…" enterkeyhint="enter"></textarea>
+      <button id="stop" class="btn danger" hidden>中止</button>
+      <button id="send" class="btn primary send">发送</button>
+    </div>
+  </div>
+</div>
+
+<div id="sheet" class="sheet" hidden>
+  <div class="sheet-backdrop" data-close></div>
+  <div class="sheet-panel">
+    <div class="sheet-bar"><span id="sheet-title"></span><button class="icon-btn" data-close>✕</button></div>
+    <div id="sheet-body" class="sheet-body"></div>
+  </div>
+</div>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

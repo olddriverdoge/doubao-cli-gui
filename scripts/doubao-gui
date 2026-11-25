@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# doubao-cli-gui 的启动/停止控制。
+# 装到 $PREFIX/bin 后可以直接 `doubao-gui start|stop|status|open|logs`。
+set -u
+
+APP_DIR="${DOUBAO_GUI_HOME:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/doubao-cli-gui"
+PID_FILE="$CONF_DIR/gui.pid"
+LOG_FILE="$CONF_DIR/server.log"
+PORT="${DOUBAO_GUI_PORT:-8765}"
+URL="http://127.0.0.1:$PORT"
+
+alive() {
+  python3 - "$PORT" <<'PY' 2>/dev/null || echo 0
+import socket
+import sys
+probe = socket.socket()
+probe.settimeout(0.6)
+try:
+    probe.connect(("127.0.0.1", int(sys.argv[1])))
+    print(1)
+except Exception:
+    print(0)
+finally:
+    probe.close()
+PY
+}
+
+start() {
+  if [ "$(alive)" = "1" ]; then
+    echo "已在运行：$URL"
+    return 0
+  fi
+  mkdir -p "$CONF_DIR"
+  if command -v termux-wake-lock >/dev/null 2>&1; then
+    termux-wake-lock 2>/dev/null || true
+  fi
+  cd "$APP_DIR" || { echo "找不到目录：$APP_DIR"; return 1; }
+  : >"$LOG_FILE"
+  setsid python3 server.py --port "$PORT" >>"$LOG_FILE" 2>&1 </dev/null &
+  echo $! >"$PID_FILE"
+  for _ in $(seq 1 48); do
+    if [ "$(alive)" = "1" ]; then
+      echo "已启动：$URL"
+      echo "日志：$LOG_FILE"
+      return 0
+    fi
+    sleep 0.25
+  done
+  echo "启动超时。最近日志："
+  tail -n 20 "$LOG_FILE" 2>/dev/null
+  return 1
+}
+
+stop() {
+  python3 - "$PORT" <<'PY' 2>/dev/null || true
+import os
+import signal
+import sys
+port = sys.argv[1]
+for entry in os.listdir("/proc"):
+    if not entry.isdigit():
+        continue
+    try:
+        with open(f"/proc/{entry}/cmdline", "rb") as handle:
+            command = handle.read().decode("utf-8", "replace")
+    except Exception:
+        continue
+    if "server.py" in command and port in command:
+        try:
+            os.kill(int(entry), signal.SIGTERM)
+        except Exception:
+            pass
+PY
+  if [ -f "$PID_FILE" ]; then
+    kill "$(cat "$PID_FILE")" 2>/dev/null || true
+    rm -f "$PID_FILE"
+  fi
+  sleep 0.6
+  if [ "$(alive)" = "1" ]; then
+    echo "仍在监听 $PORT，可能被别的进程占用"
+    return 1
+  fi
+  echo "已停止"
+}
+
+open_url() {
+  if command -v termux-open-url >/dev/null 2>&1; then
+    termux-open-url "$URL"
+  else
+    echo "在浏览器打开：$URL"
+    echo "（装 Termux:API 后可用 termux-open-url 自动跳转：pkg install termux-api）"
+  fi
+}
+
+status() {
+  if [ "$(alive)" = "1" ]; then
+    echo "运行中 · $URL"
+    [ -f "$PID_FILE" ] && echo "PID $(cat "$PID_FILE")"
+    echo "日志 $LOG_FILE"
+  else
+    echo "未运行 · 端口 $PORT"
+  fi
+}
+
+case "${1:-start}" in
+  start)
+    start
+    ;;
+  stop)
+    stop
+    ;;
+  restart)
+    stop
+    start
+    ;;
+  status)
+    status
+    ;;
+  open)
+    open_url
+    ;;
+  logs)
+    tail -n 40 -f "$LOG_FILE"
+    ;;
+  run)
+    # 桌面快捷方式入口：没有服务就起，然后跳浏览器
+    if start >/dev/null 2>&1; then
+      open_url
+    else
+      echo "启动失败，执行 doubao-gui logs 看原因"
+      exit 1
+    fi
+    ;;
+  *)
+    echo "用法：doubao-gui [start|stop|restart|status|open|logs|run]"
+    exit 2
+    ;;
+esac
