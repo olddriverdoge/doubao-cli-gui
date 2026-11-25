@@ -99,7 +99,7 @@ Termux 要 `termux-wake-lock`，并在系统设置里关掉 Termux 的电池优�
 
 为什么不把 `doubao-cli` 塞进 APK：它是 Node 程序，运行要 node 20+ 和已登录的 profile，而登录态绑设备、协议是逆向的。App 沙箱里没有这套运行时，硬塞等于重打包 node + 重做登录，收益不抵成本。
 
-构建完全在 GitHub Actions 里做（`.github/workflows/build-apk.yml`）：push 到 main 或手动触发，跑完在 Actions 的 Artifacts 下 `doubao-cli-gui-debug-apk`。debug 签名，可直接侧载；minSdk 24，ABI 只带 arm64-v8a / armeabi-v7a。
+构建完全在 GitHub Actions 里做（`.github/workflows/build-apk.yml`）：push 到 main 或手动触发，跑完在 Actions 的 Artifacts 下 `doubao-cli-gui-debug-apk`。debug 签名，可直接侧载；minSdk 24，只带 arm64-v8a（Chaquopy 17 的 Python 3.13 已无 32 位制品）。
 
 本地构建需要 JDK 17、Android SDK 35、Python 3.13：
 
