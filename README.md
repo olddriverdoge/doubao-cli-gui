@@ -101,6 +101,13 @@ Termux 要 `termux-wake-lock`，并在系统设置里关掉 Termux 的电池优�
 
 构建完全在 GitHub Actions 里做（`.github/workflows/build-apk.yml`）：push 到 main 或手动触发，跑完在 Actions 的 Artifacts 下 `doubao-cli-gui-debug-apk`。debug 签名，可直接侧载；minSdk 24，只带 arm64-v8a（Chaquopy 17 的 Python 3.13 已无 32 位制品）。
 
+装完第一次打开会停在「Termux 服务未启动」，两件事各做一次就通了：
+
+1. Termux 里 `bash ~/doubao-cli-gui/install.sh`（有 `doubao-gui` 命令）
+2. Termux 设置里打开 `allow-external-apps`
+
+之后点界面上的「启动服务」，App 会通过 `RUN_COMMAND` 拉起 `doubao-gui start`，3 秒内自动接上。
+
 本地构建需要 JDK 17、Android SDK 35、Python 3.13：
 
 ```bash
