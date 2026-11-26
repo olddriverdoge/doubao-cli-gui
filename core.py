@@ -29,7 +29,7 @@ from typing import Callable, Dict, List, Optional
 
 import term_io
 
-VERSION = "0.1.12"
+VERSION = "0.1.13"
 
 CONFIG_DIR = os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "doubao-cli-gui"
@@ -189,6 +189,7 @@ class Turn:
     sent: bool = False
     accepted: bool = False
     merged_stream: bool = False
+    log_buf: str = ""
 
 
 class Runner:
@@ -339,6 +340,27 @@ class Runner:
         self.on_event("turn_start", turn)
         return turn
 
+    def _emit_log(self, turn: Turn, text: str) -> None:
+        """把 CLI 的原始输出按行转给界面。
+
+        JSON 回执和分隔线不转，避免刷屏；截断到 400 字，防止单行日志把界面撑爆。
+        """
+        turn.log_buf += text
+        while "\n" in turn.log_buf:
+            line, turn.log_buf = turn.log_buf.split("\n", 1)
+            line = strip_ansi(line).strip("\r").rstrip()
+            if not line or not line.strip():
+                continue
+            body = line.lstrip()
+            if body.startswith("{") and (
+                    '"platform"' in body or '"runId"' in body or '"conversationId"' in body):
+                continue
+            if not line.strip(" -=*#"):
+                continue
+            self.on_event("log", {"text": line[-400:]})
+        if len(turn.log_buf) > 4000:
+            turn.log_buf = turn.log_buf[-2000:]
+
     def _pump(self, turn: Turn) -> None:
         """读循环：每条流一个阻塞读线程，主循环只消费队列。
 
@@ -373,6 +395,7 @@ class Runner:
                 turn.stdout_buf += text
             elif kind == "merged":
                 turn.merged_buf += text
+            self._emit_log(turn, text)
 
         def reader(channel) -> None:
             while not stop_flag.is_set():
@@ -771,6 +794,8 @@ class Session:
         self.auto_resume = 0
         self.trace: Optional[dict] = None
         self._trace_key = ""
+        self.logs: List[str] = []
+        self.log_seq = 0
         self._load_history()
         threading.Thread(target=self._ticker, daemon=True).start()
         threading.Thread(target=self._trace_ticker, daemon=True).start()
@@ -820,6 +845,8 @@ class Session:
             "pending": self.pending,
             "stalled": self.stalled,
             "trace": self.trace,
+            "logs": self.logs[-200:],
+            "logSeq": self.log_seq,
             "messages": self.messages,
             "version": VERSION,
             "config": {
@@ -884,6 +911,8 @@ class Session:
         self.auto_resume = 0
         self.trace = None
         self._trace_key = ""
+        self.logs = []
+        self.log_seq = 0
         self._add_message("user", text)
         self.status = "running"
         self.phase = "提交中"
@@ -981,6 +1010,8 @@ class Session:
         self.status = "idle"
         self.phase = "空闲"
         self.approval = None
+        self.logs = []
+        self.log_seq = 0
         self.config["last_conversation"] = conversation_id
         save_config(self.config)
         self._load_history()
@@ -998,12 +1029,23 @@ class Session:
         self.phase = "空闲"
         self.approval = None
         self.messages = []
+        self.logs = []
+        self.log_seq = 0
         self.emit({"type": "snapshot", "data": self.snapshot()})
         return {"ok": True}
 
     # -- Runner 回调
 
-    def _on_runner(self, kind: str, turn: Turn) -> None:
+    def _on_runner(self, kind: str, payload) -> None:
+        if kind == "log":
+            text = str((payload or {}).get("text") or "") if isinstance(payload, dict) else ""
+            if text:
+                self.logs.append(text)
+                self.logs = self.logs[-400:]
+                self.log_seq += 1
+                self.emit({"type": "log", "data": {"seq": self.log_seq, "text": text}})
+            return
+        turn = payload
         if kind == "turn_start":
             self.conversation_id = turn.conversation_id or self.conversation_id
             self.status = "running"

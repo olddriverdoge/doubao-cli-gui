@@ -103,7 +103,31 @@ status() {
   fi
 }
 
+version() {
+  CODE="$(sed -n 's/^VERSION *= *"\([^"]*\)".*/\1/p' "$APP_DIR/core.py" 2>/dev/null | head -n 1)"
+  LIVE="$(python3 - "$PORT" <<'PY' 2>/dev/null
+import json
+import sys
+import urllib.request
+
+try:
+    with urllib.request.urlopen("http://127.0.0.1:%s/api/state" % sys.argv[1], timeout=3) as response:
+        print((json.loads(response.read().decode("utf-8")).get("data") or {}).get("version") or "-")
+except Exception:
+    print("-")
+PY
+)"
+  echo "代码 ${CODE:-读不到} · 线上 ${LIVE:-没响应}"
+  if [ -n "$CODE" ] && [ "$CODE" != "$LIVE" ]; then
+    echo "不一致：线上还是旧进程，执行 doubao-gui restart"
+    return 1
+  fi
+}
+
 case "${1:-start}" in
+  version)
+    version
+    ;;
   start)
     start
     ;;
@@ -133,7 +157,7 @@ case "${1:-start}" in
     fi
     ;;
   *)
-    echo "用法：doubao-gui [start|stop|restart|status|open|logs|run]"
+    echo "用法：doubao-gui [start|stop|restart|status|version|open|logs|run]"
     exit 2
     ;;
 esac

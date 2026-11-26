@@ -35,13 +35,15 @@
   const traceThink = document.getElementById("trace-think");
   const traceSteps = document.getElementById("trace-steps");
   const traceCaret = document.getElementById("trace-caret");
+  const traceRaw = document.getElementById("trace-raw");
+  const traceRawCount = document.getElementById("trace-raw-count");
   const attachBtn = document.getElementById("attach");
   const pdOpenBtn = document.getElementById("pd-open");
 
   let traceOpen = false;
   try { traceOpen = localStorage.getItem("traceOpen") === "1"; } catch (error) { traceOpen = false; }
 
-  const state = { status: "idle", phase: "空闲", approval: null, pending: null, stalled: false, trace: null, cid: "", rendered: new Set(), offline: false, appVersion: "", attach: [] };
+  const state = { status: "idle", phase: "空闲", approval: null, pending: null, stalled: false, trace: null, logs: [], logSeq: 0, cid: "", rendered: new Set(), offline: false, appVersion: "", attach: [] };
   let nativeMode = false;
   let toastTimer = 0;
 
@@ -159,6 +161,8 @@
     state.pending = data.pending || null;
     state.stalled = !!data.stalled;
     if (data.trace !== undefined) state.trace = data.trace || null;
+    if (data.logs !== undefined) state.logs = data.logs || [];
+    if (data.logSeq !== undefined) state.logSeq = data.logSeq || 0;
     if (data.conversationId !== undefined) {
       state.cid = data.conversationId || "";
       cidEl.textContent = state.cid ? "会话 " + state.cid.slice(-6) : "无会话";
@@ -220,22 +224,23 @@
   }
 
   function traceSummary(trace) {
-    if (!trace) return "";
     const parts = [];
-    if (trace.thinking) parts.push("思考 " + trace.thinking.length + " 字");
-    const steps = trace.steps || [];
+    if (trace && trace.thinking) parts.push("思考 " + trace.thinking.length + " 字");
+    const steps = (trace && trace.steps) || [];
     if (steps.length) {
       const done = steps.filter((step) => step.completed).length;
       parts.push("步骤 " + done + "/" + steps.length);
     }
-    if (trace.completed) parts.push("已完成");
+    if (state.logs.length) parts.push("输出 " + state.logs.length + " 行");
+    if (trace && trace.completed) parts.push("已完成");
     return parts.join(" · ");
   }
 
   function renderTrace(forceScroll) {
     const trace = state.trace;
     const steps = (trace && trace.steps) || [];
-    const visible = !!trace && (state.status !== "idle" || !!trace.thinking || steps.length > 0);
+    const visible = (!!trace && (state.status !== "idle" || !!trace.thinking || steps.length > 0)) ||
+      state.logs.length > 0;
     if (!visible) {
       traceBox.hidden = true;
       return;
@@ -245,7 +250,7 @@
     traceCaret.textContent = traceOpen ? "▴" : "▾";
     traceBody.hidden = !traceOpen;
 
-    const thinking = (trace.thinking || "").trim();
+    const thinking = ((trace && trace.thinking) || "").trim();
     const shown = thinking || "（这一步没有输出思考文本）";
     if (traceThink.textContent !== shown) {
       const atBottom = traceThink.scrollHeight - traceThink.scrollTop - traceThink.clientHeight < 24;
@@ -259,6 +264,15 @@
       return '<div class="trace-step">' + mark + escapeHtml(label) + "</div>";
     });
     traceSteps.innerHTML = rows.join("") || '<div class="trace-step"><span class="off">•</span>还在准备</div>';
+
+    const tail = state.logs.slice(-200);
+    traceRawCount.textContent = state.logs.length ? state.logs.length + " 行" : "";
+    const rawText = tail.join("\n");
+    if (traceRaw.textContent !== rawText) {
+      const atBottom = traceRaw.scrollHeight - traceRaw.scrollTop - traceRaw.clientHeight < 24;
+      traceRaw.textContent = rawText || "（还没有命令行输出）";
+      if (atBottom || forceScroll) traceRaw.scrollTop = traceRaw.scrollHeight;
+    }
   }
 
   traceToggle.addEventListener("click", () => {
@@ -288,6 +302,15 @@
       } else if (payload.type === "trace") {
         state.trace = payload.data || null;
         renderTrace(true);
+      } else if (payload.type === "log") {
+        const entry = payload.data || {};
+        const text = String(entry.text || "");
+        if (text) {
+          state.logs.push(text);
+          if (state.logs.length > 400) state.logs = state.logs.slice(-400);
+          state.logSeq = Number(entry.seq) || state.logSeq + 1;
+          renderTrace(true);
+        }
       } else if (payload.type === "tick") {
         const seconds = Number(payload.data && payload.data.elapsed) || 0;
         timerEl.textContent = seconds ? Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0") : "";
@@ -1125,6 +1148,8 @@
     const config = data.config || {};
     state.attach = config.attach || [];
     state.trace = data.trace || null;
+    state.logs = data.logs || [];
+    state.logSeq = data.logSeq || 0;
     attachBtn.textContent = state.attach.length ? "＋" + state.attach.length : "＋";
     attachBtn.classList.toggle("has", state.attach.length > 0);
     renderTrace(false);
