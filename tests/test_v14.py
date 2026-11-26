@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""0.1.15：假完成修正、云端对账、网页桥接接口。"""
+"""0.1.16：假完成修正、云端对账、网页桥接接口。"""
 import json
 import os
 import sys
@@ -52,7 +52,7 @@ class CoreCase(unittest.TestCase):
         self.session = core.Session(_config(self.tmp), self.events.append)
 
     def test_version(self) -> None:
-        self.assertEqual(core.VERSION, "0.1.15")
+        self.assertEqual(core.VERSION, "0.1.16")
 
     def test_unsettled_run_is_stalled(self) -> None:
         """云端还在 running、本地进程已退出：不能再报“完成”。"""
@@ -102,7 +102,7 @@ class CoreCase(unittest.TestCase):
         self.assertTrue(state["canStop"])
         # stalled 仍可发新消息，只是会丢掉续等机会，所以 canSend 保持 True
         self.assertTrue(state["canSend"])
-        self.assertEqual(state["version"], "0.1.15")
+        self.assertEqual(state["version"], "0.1.16")
 
     def test_snapshot_exposes_token(self) -> None:
         self.assertEqual(self.session.snapshot()["config"]["bridgeToken"], TOKEN)
@@ -145,7 +145,7 @@ class BridgeHttpCase(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(payload["ok"])
         self.assertTrue(payload["bridge"])
-        self.assertEqual(payload["version"], "0.1.15")
+        self.assertEqual(payload["version"], "0.1.16")
 
     def test_state_requires_token(self) -> None:
         status, payload = self.call("/api/web/state", token="")
@@ -155,7 +155,7 @@ class BridgeHttpCase(unittest.TestCase):
     def test_state_with_token(self) -> None:
         status, payload = self.call("/api/web/state")
         self.assertEqual(status, 200)
-        self.assertEqual(payload["data"]["version"], "0.1.15")
+        self.assertEqual(payload["data"]["version"], "0.1.16")
 
     def test_cors_preflight(self) -> None:
         request = Request(f"http://127.0.0.1:{self.port}/api/web/state", method="OPTIONS")

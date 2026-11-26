@@ -481,9 +481,14 @@
     profile.placeholder = "profile 名称，留空用默认";
     const profileField = field("登录 profile（可留空）", profile);
 
+    const pasted = document.createElement("textarea");
+    pasted.rows = 4;
+    pasted.placeholder = "整段粘贴：name=value; name=value（也认 {\"cookie\":\"...\"} 和导出的数组）";
+    const pasteField = field("粘贴 Cookie", pasted);
+
     const cookie = document.createElement("input");
     cookie.type = "text";
-    cookie.placeholder = "Cookie 文件绝对路径（新设备扫码会撞 MFA，建议走这条）";
+    cookie.placeholder = "也可以给 Cookie 文件的绝对路径";
     const cookieField = field("Cookie 文件", cookie);
     const cookieRow = document.createElement("div");
     cookieRow.className = "row";
@@ -496,8 +501,11 @@
     startBtn.disabled = true;
     const cancelBtn = button("取消", "ghost", () => cancelLogin());
     cancelBtn.hidden = true;
+    const saveQrBtn = button("存二维码", "ghost", () => saveQr());
+    saveQrBtn.hidden = true;
     primaryRow.appendChild(startBtn);
     primaryRow.appendChild(cancelBtn);
+    primaryRow.appendChild(saveQrBtn);
 
     const secondRow = document.createElement("div");
     secondRow.className = "row";
@@ -510,6 +518,11 @@
     wrap.appendChild(qr);
     wrap.appendChild(qrTip);
     if (!readProfile) wrap.appendChild(profileField);
+    wrap.appendChild(pasteField);
+    const pasteHint = document.createElement("div");
+    pasteHint.className = "hint";
+    pasteHint.textContent = "一台手机扫不了自己屏幕上的码：要么用另一台设备扫，要么「存二维码」到相册再扫。新设备扫码常被 MFA 拦（2156），那就只能走 Cookie。";
+    wrap.appendChild(pasteHint);
     wrap.appendChild(cookieField);
     wrap.appendChild(cookieRow);
     wrap.appendChild(primaryRow);
@@ -534,6 +547,7 @@
         line.textContent = "这台机器已登录，可以直接派任务。";
         qr.hidden = true;
         qrTip.hidden = true;
+        saveQrBtn.hidden = true;
         cancelBtn.hidden = true;
         logoutBtn.hidden = false;
         startBtn.disabled = false;
@@ -550,6 +564,7 @@
         if (data.qr) {
           qr.src = data.qr;
           qr.hidden = false;
+          saveQrBtn.hidden = false;
           const age = data.qrAge || 0;
           if (age >= 90) {
             qrTip.textContent = "二维码已等 " + age + " 秒，可能过期了，建议刷新";
@@ -563,6 +578,7 @@
         } else {
           qr.hidden = true;
           qrTip.hidden = true;
+          saveQrBtn.hidden = true;
           startBtn.textContent = "正在生成…";
           startBtn.disabled = true;
         }
@@ -574,6 +590,7 @@
       waiting = false;
       qr.hidden = true;
       qrTip.hidden = true;
+      saveQrBtn.hidden = true;
       cancelBtn.hidden = true;
       startBtn.disabled = false;
       startBtn.textContent = data.probed ? "扫码登录" : "检测中…";
@@ -621,17 +638,33 @@
     }
 
     async function loginCookie() {
+      const text = pasted.value.trim();
       const path = cookie.value.trim();
-      if (!path) { toast("先填 Cookie 文件路径"); return; }
+      if (!text && !path) { toast("先粘贴 Cookie，或填 Cookie 文件路径"); return; }
       cookieBtn.disabled = true;
       cookieBtn.textContent = "登录中…";
       const name = (readProfile ? readProfile() : profile.value).trim();
-      const result = await post("/api/login/cookie", { path: path, profile: name });
+      const result = await post("/api/login/cookie", { text: text, path: path, profile: name });
       cookieBtn.disabled = false;
       cookieBtn.textContent = "用 Cookie 登录";
       render(result);
-      if (result && result.ok) toast("已登录");
-      else toast((result && result.error) || "Cookie 登录失败");
+      if (result && result.ok) {
+        pasted.value = "";
+        toast("已登录");
+        load();
+      } else {
+        toast((result && result.error) || "Cookie 登录失败");
+      }
+    }
+
+    function saveQr() {
+      if (!qr.src) { toast("还没有二维码"); return; }
+      const link = document.createElement("a");
+      link.href = qr.src;
+      link.download = "doubao-login-" + Date.now() + ".png";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
     }
 
     async function cancelLogin() {

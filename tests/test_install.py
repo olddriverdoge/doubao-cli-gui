@@ -3,6 +3,7 @@
 """安装脚本的静态回归：必须是“远程可跑”的，而不是只认 git clone 后的目录。"""
 
 import os
+import shutil
 import subprocess
 import sys
 
@@ -28,9 +29,13 @@ runner = read("scripts/doubao-gui")
 readme = read("README.md")
 
 print("语法")
+bash = shutil.which("bash")
 for name, text in (("install.sh", install), ("scripts/doubao-gui", runner)):
     path = os.path.join(ROOT, name)
-    result = subprocess.run(["bash", "-n", path], capture_output=True, text=True)
+    if not bash:
+        print(f"  · {name} 跳过 bash -n（本机没有 bash，Termux 上是主路径）")
+        continue
+    result = subprocess.run([bash, "-n", path], capture_output=True, text=True)
     check(f"{name} 通过 bash -n", result.returncode == 0, result.stderr.strip())
 
 print("\n远程自举")

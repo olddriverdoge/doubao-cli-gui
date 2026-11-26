@@ -395,6 +395,7 @@ class Handler(BaseHTTPRequestHandler):
                     self.session.config,
                     str(payload.get("path") or ""),
                     str(payload.get("profile") or ""),
+                    str(payload.get("text") or ""),
                 )
             )
         elif path == "/api/login/cancel":
@@ -870,18 +871,84 @@ def _login_pump(proc: subprocess.Popen, config: dict) -> None:
             LOGIN["qr"] = ""
             LOGIN["qrAt"] = 0.0
         else:
-            LOGIN["detail"] = detail or "登录未完成"
+            LOGIN["detail"] = _login_hint(detail or "登录未完成")
 
 
-def _login_cookie(config: dict, path: str, profile: str = "") -> dict:
-    """用 Cookie 文件登录。
+MFA_HINT = (
+    "扫码被风控拦下了（errorCode 2156，新设备常见）。"
+    "改用「粘贴 Cookie」登录：在已登录的浏览器里把整段 document.cookie 复制过来。"
+)
+
+
+def _login_hint(detail: str) -> str:
+    """把 CLI 的原始报错翻成一句能照着做的提示。"""
+    text = detail or ""
+    if any(key in text for key in ("2156", "QR status check failed", "MFA", "mfa")):
+        return MFA_HINT
+    return text
+
+
+def _cookie_payload(text: str) -> str:
+    """把粘贴进来的内容整理成 CLI 认的 `name=value; ...` 串。
+
+    CLI 的 --cookie-file 接受 Cookie 头、`{"cookie": "..."}` 或导出的数组，
+    这里先把它们统一成一行，落盘后再交给 CLI。
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    if raw[:1] in ("[", "{"):
+        try:
+            data = json.loads(raw)
+        except Exception:
+            data = None
+        if isinstance(data, dict):
+            for key in ("cookie", "cookieHeader", "cookie_header"):
+                if data.get(key):
+                    return str(data[key]).strip()
+        if isinstance(data, list):
+            pairs = []
+            for item in data:
+                if isinstance(item, dict) and item.get("name"):
+                    pairs.append("%s=%s" % (item["name"], item.get("value", "")))
+            if pairs:
+                return "; ".join(pairs)
+    if raw.lower().startswith("cookie:"):
+        raw = raw[7:].strip()
+    return " ".join(raw.split())
+
+
+def _login_cookie(config: dict, path: str = "", profile: str = "", text: str = "") -> dict:
+    """用 Cookie 登录：既收文件路径，也收直接粘贴的整段 Cookie。
 
     新设备扫码基本一定会撞 MFA（errorCode 2156），Cookie 是唯一可靠的路，
     所以单给一个入口，不走二维码那条链路。
     """
-    path = os.path.abspath(os.path.expanduser((path or "").strip()))
-    if not path:
-        return {"ok": False, "error": "请填写 Cookie 文件路径", **_login_snapshot()}
+    source = "file"
+    payload = _cookie_payload(text)
+    if payload:
+        if "=" not in payload:
+            return {"ok": False, "error": "粘贴的内容不像 Cookie：至少要 name=value; name=value",
+                    **_login_snapshot()}
+        target = os.path.join(core.CONFIG_DIR, "login-cookie.txt")
+        try:
+            folder = os.path.dirname(target)
+            if folder:
+                os.makedirs(folder, exist_ok=True)
+            with open(target, "w", encoding="utf-8", newline="\n") as handle:
+                handle.write(payload + "\n")
+            try:
+                os.chmod(target, 0o600)
+            except Exception:
+                pass
+        except Exception as exc:
+            return {"ok": False, "error": "Cookie 落盘失败：" + str(exc), **_login_snapshot()}
+        path = target
+        source = "text"
+    raw_path = (path or "").strip()
+    if not raw_path:
+        return {"ok": False, "error": "请粘贴 Cookie 或填写 Cookie 文件路径", **_login_snapshot()}
+    path = os.path.abspath(os.path.expanduser(raw_path))
     if not os.path.isfile(path):
         return {"ok": False, "error": "Cookie 文件不存在：" + path, **_login_snapshot()}
     with LOGIN_LOCK:
@@ -922,8 +989,9 @@ def _login_cookie(config: dict, path: str, profile: str = "") -> dict:
         )
     snapshot = _login_snapshot()
     if not logged_in:
-        return {"ok": False, "error": detail or "Cookie 未能登录", **snapshot}
-    return {"ok": True, **snapshot}
+        return {"ok": False, "error": _login_hint(detail or "Cookie 未能登录"),
+                "source": source, **snapshot}
+    return {"ok": True, "source": source, **snapshot}
 
 
 def _login_arm(config: dict, seconds: int, profile: str = "", refresh: bool = False) -> dict:

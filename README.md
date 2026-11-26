@@ -70,7 +70,10 @@ npm i --prefix D:\PYPJ\tools\dcl doubao-cli@0.23.3
   --bin-arg "D:\PYPJ\tools\dcl\node_modules\doubao-cli\bin\doubao.mjs"
 ```
 
-浏览器打开 `http://127.0.0.1:8766`。菜单里的「登录」可以直接扫码：二维码在页面里渲染，过期会提示刷新，可以取消，也能一键退出登录；profile 在登录框里填（等价于 `doubao headless login --profile <profile>`）。
+浏览器打开 `http://127.0.0.1:8766`。设置里的「登录」有两条路：
+
+- **扫码**：二维码在页面里渲染，过期会提示刷新，可以取消，也能一键退出登录；profile 在登录框里填（等价于 `doubao headless login --profile <profile>`）。同一台手机扫不了自己屏幕，用另一台设备扫，或点「存二维码」存进相册再扫。
+- **粘贴 Cookie**：把已登录浏览器里的整段 cookie（`name=value; name=value`，也认 `{"cookie": "..."}` 和导出的数组）贴进多行框，点「用 Cookie 登录」。新设备扫码基本一定会撞 MFA（errorCode 2156），这条路是主路径；粘贴内容会落到配置目录的 `login-cookie.txt`（权限 600）。
 
 三个 Windows 专属细节：
 

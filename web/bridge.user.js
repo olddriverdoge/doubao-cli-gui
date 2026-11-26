@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         豆包网页 · 本地 CLI 桥接
 // @namespace    doubao-cli-gui
-// @version      0.1.15
+// @version      0.1.16
 // @description  把网页上的发送/停止/授权转到本机 doubao-cli；视觉仍用官方页面。默认只观察（探针），采样齐了再开接管。
 // @author       doubao-cli-gui
 // @match        https://www.doubao.com/*
@@ -71,6 +71,9 @@
 
   function capture(kind, data) {
     if (mode() !== 'probe') return;
+    // 放过自己调本机服务的请求，否则 /api/web/capture 会把上一轮的 body 塞进下一轮，无限自吞
+    if (data && data.url && String(data.url).indexOf('127.0.0.1') >= 0) return;
+    if (data && data.url && String(data.url).indexOf('/api/web/') >= 0 && String(data.url).indexOf('http') !== 0) return;
     captured += 1;
     buffer.push(Object.assign({ kind: kind, at: new Date().toISOString() }, data));
     if (buffer.length >= 20) flush();
