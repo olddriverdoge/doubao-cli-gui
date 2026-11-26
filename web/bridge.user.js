@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         豆包网页 · 本地 CLI 桥接
 // @namespace    doubao-cli-gui
-// @version      0.1.14
+// @version      0.1.15
 // @description  把网页上的发送/停止/授权转到本机 doubao-cli；视觉仍用官方页面。默认只观察（探针），采样齐了再开接管。
 // @author       doubao-cli-gui
 // @match        https://www.doubao.com/*
@@ -28,6 +28,7 @@
 
   // 发送类请求的猜测规则；采样到真实端点后可在设置里改写
   var DEFAULT_RULES = [
+    '/chat/completion',
     '/api/.*(chat|message|conversation).*(send|create|submit|completion)',
     '/api/chat/completion',
     '/send_message',
@@ -94,6 +95,99 @@
     return null;
   }
 
+  // ---------- 接管：拦截官方发送，改由本地 CLI 发 ----------
+
+  var takeoverPending = false;
+  var takeoverLast = null;
+
+  function flash(msg) {
+    try {
+      var el = document.getElementById('dbg-bridge-bar');
+      if (!el) return;
+      var f = el.querySelector('.dbg-flash');
+      if (!f) {
+        f = document.createElement('div');
+        f.className = 'dbg-flash';
+        css(f, { fontSize: '11px', lineHeight: '1.35', color: '#bf8700', marginTop: '3px', wordBreak: 'break-all' });
+        el.appendChild(f);
+      }
+      f.textContent = msg;
+      setTimeout(function () { if (f.textContent === msg) f.textContent = ''; }, 8000);
+    } catch (e) {}
+  }
+
+  // 从官方 /chat/completion 的请求体里抽出「用户说了什么」和上下文
+  function parseSendBody(body) {
+    var out = { text: '', cid: '', needCreate: false, agentMode: 2, modelKey: '', effort: '' };
+    try {
+      var obj = JSON.parse(body);
+      var msgs = obj.messages || [];
+      var last = msgs[msgs.length - 1] || {};
+      (last.content_block || []).forEach(function (b) {
+        var t = b && b.content && b.content.text_block && b.content.text_block.text;
+        if (t) out.text += (out.text ? '\n' : '') + t;
+      });
+      out.cid = (obj.client_meta || {}).conversation_id || '';
+      var opt = obj.option || {};
+      out.needCreate = !!opt.need_create_conversation;
+      if (typeof opt.agent_mode === 'number') out.agentMode = opt.agent_mode;
+      var mc = opt.model_config || {};
+      if (mc.model_item_key) out.modelKey = String(mc.model_item_key);
+      if (mc.reasoning_effort != null) out.effort = String(mc.reasoning_effort);
+    } catch (e) {}
+    return out;
+  }
+
+  function emptyStream() {
+    var stream = null;
+    try {
+      stream = new ReadableStream({ start: function (c) { c.close(); } });
+    } catch (e) {}
+    return new Response(stream, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+  }
+
+  function jump(cid) {
+    try {
+      if (cid && location.pathname !== '/chat/' + cid) location.href = '/chat/' + cid;
+      else location.reload();
+    } catch (e) {}
+  }
+
+  // 返回 Promise<Response>：交给本地 CLI；本地不受理就原样放行官方请求
+  function takeover(rawFetch, ctx, args, body) {
+    var p = parseSendBody(body);
+    if (!p.text) return null;
+    var payload = { text: p.text, mode: p.agentMode === 2 ? 'chat' : 'work' };
+    if (p.cid) payload.conversationId = p.cid;
+    if (p.needCreate || !p.cid) payload.fresh = true;
+    // 页面的 model_item_key 多为纯数字序号（0 = 自动/默认），CLI 只认模型名，
+    // 直接把 "0" 传过去会报 unknown model，所以只在像名字时才带。
+    if (p.modelKey && !/^\d+$/.test(p.modelKey)) payload.model = p.modelKey;
+
+    takeoverPending = true;
+    flash('接管中：' + p.text.slice(0, 40));
+    render();
+
+    return rpc('/api/web/send', { method: 'POST', body: payload }).then(function (r) {
+      takeoverPending = false;
+      takeoverLast = r;
+      if (!r || !r.ok) {
+        flash('本地未接管（' + ((r && r.error) || '无响应') + '），已回退官方');
+        render();
+        return rawFetch.apply(ctx, args);
+      }
+      flash('已交给本地 CLI：run ' + (r.runId || '-'));
+      render();
+      setTimeout(function () { jump(r.conversationId || p.cid); }, 2200);
+      return emptyStream();
+    }).catch(function (e) {
+      takeoverPending = false;
+      flash('桥接异常（' + String(e).slice(0, 60) + '），已回退官方');
+      render();
+      return rawFetch.apply(ctx, args);
+    });
+  }
+
   // fetch
   var rawFetch = window.fetch;
   if (typeof rawFetch === 'function') {
@@ -101,8 +195,15 @@
       var url = typeof input === 'string' ? input : (input && input.url) || '';
       var method = String((init && init.method) || (input && input.method) || 'GET').toUpperCase();
       var body = init ? bodyText(init.body) : null;
+      var rawBody = init && typeof init.body === 'string' ? init.body : null;
       var hit = method !== 'GET' && matchSend(url);
       var watch = hit || /\/api\//.test(url);
+
+      // 接管模式：命中发送端点就不再让官方发出，改由本地 CLI 真跑
+      if (hit && rawBody && mode() === 'bridge') {
+        var taken = takeover(rawFetch, this, arguments, rawBody);
+        if (taken) return taken;
+      }
 
       if (watch) capture('fetch', { url: url, method: method, send: hit, body: body });
 

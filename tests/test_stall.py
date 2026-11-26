@@ -30,7 +30,7 @@ core.save_config = lambda config: None
 
 def make_session():
     events = []
-    session = core.Session({"bin": sys.executable, "binArgs": [], "workspace": ROOT, "timeout": 30}, events.append)
+    session = core.Session({"bin": sys.executable, "binArgs": [os.path.join(ROOT, "tests", "mock_doubao.py")], "workspace": ROOT, "timeout": 30}, events.append)
     session.messages = []
     return session, events
 
@@ -108,8 +108,8 @@ check("completed 不触发接管", session.stalled is False)
 print("\n有进度的 running 不当僵局")
 session, events = make_session()
 session._finish(make_turn(result={"status": "running", "tasks": {"total": 0}, "progress": "还在跑"}))
-check("有 progress 走未确认完成", session.status == "done", session.status)
-check("不标 stalled", session.stalled is False)
+check("有 progress 但云端未收尾 → stalled", session.status == "stalled", session.status)
+check("标 stalled 让用户去点续等", session.stalled is True)
 
 print()
 if FAILURES:

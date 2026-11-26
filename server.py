@@ -79,6 +79,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Max-Age", "600")
         self.send_header("Vary", "Origin")
+        # 公网 https 页面访问 127.0.0.1 属于 Private Network Access，
+        # Chrome 要求预检显式放行，否则脚本连不上本机。
+        self.send_header("Access-Control-Allow-Private-Network", "true")
 
     def do_OPTIONS(self) -> None:
         self.send_response(204)
@@ -139,11 +142,15 @@ class Handler(BaseHTTPRequestHandler):
             if not switched.get("ok"):
                 return switched
         changed = False
+        model_value = payload.get("model")
+        if isinstance(model_value, str) and model_value.strip().isdigit():
+            # 网页传的是模型序号而不是名字，CLI 只认名字，宁可不传
+            model_value = None
         for key, value in (
             ("mode", payload.get("mode")),
             ("workspace", payload.get("workspace")),
             ("permission", payload.get("permission")),
-            ("model", payload.get("model")),
+            ("model", model_value),
             ("timeout", payload.get("timeout")),
         ):
             if value in (None, ""):

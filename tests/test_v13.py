@@ -93,7 +93,7 @@ class SessionLogs(unittest.TestCase):
         snap = self.session.snapshot()
         self.assertEqual(snap["logs"], ["a"])
         self.assertEqual(snap["logSeq"], 1)
-        self.assertEqual(snap["version"], "0.1.14")
+        self.assertEqual(snap["version"], "0.1.15")
 
     def test_empty_text_ignored(self):
         before = self.session.log_seq

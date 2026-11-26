@@ -29,7 +29,7 @@ from typing import Callable, Dict, List, Optional
 
 import term_io
 
-VERSION = "0.1.14"
+VERSION = "0.1.15"
 
 CONFIG_DIR = os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "doubao-cli-gui"
@@ -190,6 +190,7 @@ class Turn:
     accepted: bool = False
     merged_stream: bool = False
     log_buf: str = ""
+    stopped: bool = False
 
 
 class Runner:
@@ -241,7 +242,8 @@ class Runner:
     def _model_flags(self) -> List[str]:
         flags: List[str] = []
         model = str(self.config.get("model") or "").strip()
-        if model:
+        if model and not model.isdigit():
+            # 网页那侧传的是模型序号（0/1/...），不是 CLI 认的模型名，别拼进去
             flags += ["--model", model]
         reasoning = str(self.config.get("reasoning") or "").strip()
         if reasoning in REASONING_LEVELS:
@@ -591,6 +593,7 @@ class Runner:
             turn.term.terminate()
         except Exception:
             return False
+        turn.stopped = True
         turn.phase = "已中止"
         self.on_event("turn_update", turn)
         return True
@@ -873,6 +876,29 @@ class Session:
             "permissions": PERM_LABELS,
         }
 
+    def _cloud_latest_run(self) -> dict:
+        """问云端这个会话最近一条 run 是谁。
+
+        用户可能发完几秒就点停止，这时本地还没解析出 runId；去云端反查一次，
+        浮动条上的「续等」才不会因为缺 runId 而消失。
+        """
+        if not self.conversation_id:
+            return {}
+        argv = self.runner._bin_argv("headless", "sessions", "status", self.conversation_id)
+        if self.config.get("profile"):
+            argv += ["--profile", str(self.config["profile"])]
+        argv += ["--json"]
+        try:
+            result = subprocess.run(argv, capture_output=True, text=True, timeout=8)
+        except Exception:
+            return {}
+        if result.returncode != 0:
+            return {}
+        try:
+            return json.loads(result.stdout) or {}
+        except Exception:
+            return {}
+
     def _cloud_settle(self) -> str:
         """问云端这一轮到底结束了没有。
 
@@ -1134,6 +1160,28 @@ class Session:
     def _finish(self, turn: Turn) -> None:
         self.started_at = 0.0
         self.approval = None
+        if getattr(turn, "stopped", False):
+            # 用户点了停止：这不是失败，别显示“失败”让人以为出错了
+            self.status = "stopped"
+            self.phase = "已停止"
+            self.stalled = False
+            self.pending = None
+            if turn.conversation_id:
+                self.conversation_id = turn.conversation_id
+            if turn.run_id:
+                self.run_id = turn.run_id
+            if not self.run_id:
+                probe = self._cloud_latest_run()
+                if probe.get("runId"):
+                    self.run_id = str(probe["runId"])
+                if str(probe.get("status") or "") == "running":
+                    self.phase = "已停止 · 云端仍在跑"
+                    self._add_message(
+                        "system",
+                        "本地进程已停，云端那一条还在跑。点「续等」继续盯着它，别重发。",
+                    )
+            self.emit(self._status_event())
+            return
         if turn.conversation_id:
             self.conversation_id = turn.conversation_id
             self.config["last_conversation"] = turn.conversation_id

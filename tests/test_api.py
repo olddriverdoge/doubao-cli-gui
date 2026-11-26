@@ -293,7 +293,7 @@ def scenario_approval_flow() -> None:
             check("第三次是 Bash", (third["data"]["approval"] or {}).get("tool") == "Bash", str((third["data"]["approval"] or {}).get("tool")))
         api(port, "POST", "/api/approve", {"allow": True, "scope": "once"})
 
-        final = stream.wait(lambda event: event["type"] == "status" and event["data"]["status"] in ("done", "error"), 20)
+        final = stream.wait(lambda event: event["type"] == "status" and event["data"]["status"] in ("done", "error", "stopped"), 20)
         check("最终回到终态", final is not None)
         if final:
             check("终态是 done", final["data"]["status"] == "done", final["data"]["status"])
@@ -333,7 +333,7 @@ def scenario_deny_and_resume() -> None:
         denied = api(port, "POST", "/api/approve", {"allow": False, "scope": "once"})
         check("拒绝返回 ok", denied.get("ok") is True)
 
-        final = stream.wait(lambda event: event["type"] == "status" and event["data"]["status"] in ("done", "error"), 20)
+        final = stream.wait(lambda event: event["type"] == "status" and event["data"]["status"] in ("done", "error", "stopped"), 20)
         check("拒绝后进入终态", final is not None)
         if final:
             check("终态是 error", final["data"]["status"] == "error", final["data"]["status"])
@@ -382,7 +382,7 @@ def scenario_config_and_stop() -> None:
         stream.wait(lambda event: event["type"] == "status" and event["data"]["status"] == "approval", 15)
         stopped = api(port, "POST", "/api/stop", {})
         check("中止返回 ok", stopped.get("ok") is True, str(stopped.get("error")))
-        after = stream.wait(lambda event: event["type"] == "status" and event["data"]["status"] in ("done", "error"), 20)
+        after = stream.wait(lambda event: event["type"] == "status" and event["data"]["status"] in ("done", "error", "stopped"), 20)
         check("中止后进入终态", after is not None)
 
         no_task = api(port, "POST", "/api/stop", {})
