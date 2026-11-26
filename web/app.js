@@ -497,11 +497,14 @@
       getJson("/api/models").then((result) => {
         if (!result || !result.ok) return;
         (result.models || []).forEach((item) => {
-          const id = item && item.id;
-          if (!id) return;
-          if (Array.from(model.options).some((option) => option.value === id)) return;
-          const label = item.name && item.name !== id ? item.name + " · " + id : id;
-          model.appendChild(new Option(label, id));
+          if (!item) return;
+          const id = item.id || "";
+          const name = item.name || id;
+          if (!name) return;
+          if (Array.from(model.options).some((option) => option.value === name)) return;
+          const label = name !== id ? name + " · " + id : name;
+          model.appendChild(new Option(label, name));
+          if (config.model === id && id !== name) model.value = name;
         });
       });
 

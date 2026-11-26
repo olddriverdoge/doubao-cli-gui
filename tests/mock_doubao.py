@@ -161,6 +161,7 @@ def main(argv: list) -> int:
             "models": [
                 {"id": "doubao-seed-2-0-pro", "name": "doubao-seed-2-0-pro", "selected": True},
                 {"id": "doubao-seed-2-0-lite", "name": "doubao-seed-2-0-lite", "selected": False},
+                {"id": "9", "name": "自动", "selected": False},
             ],
             "reasoning": "high",
         })

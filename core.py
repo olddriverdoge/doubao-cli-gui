@@ -29,7 +29,7 @@ from typing import Callable, Dict, List, Optional
 
 import term_io
 
-VERSION = "0.1.9"
+VERSION = "0.1.10"
 
 CONFIG_DIR = os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "doubao-cli-gui"

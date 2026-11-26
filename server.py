@@ -235,6 +235,18 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._json({"ok": False, "error": "未知接口"}, 404)
 
+    def _model_name(self, value: str) -> str:
+        """CLI 的 --model 只认名称（如“自动”），前端可能传数字 id（如 9），这里换回来。"""
+        if not value or not value.isdigit():
+            return value
+        result = self._list_models()
+        if not result.get("ok"):
+            return value
+        for row in result.get("models") or []:
+            if str(row.get("id")) == value:
+                return str(row.get("name") or value)
+        return value
+
     def _update_config(self, payload: dict) -> dict:
         config = self.session.config
         changed = False
@@ -260,7 +272,7 @@ class Handler(BaseHTTPRequestHandler):
             config["profile"] = str(payload["profile"] or "")
             changed = True
         if "model" in payload:
-            config["model"] = str(payload["model"] or "").strip()
+            config["model"] = self._model_name(str(payload["model"] or "").strip())
             changed = True
         if "reasoning" in payload:
             value = str(payload["reasoning"] or "").strip()
@@ -347,6 +359,15 @@ class Handler(BaseHTTPRequestHandler):
                         "selected": bool(row.get("selected")),
                     }
                 )
+        config = self.session.config
+        current = str(config.get("model") or "").strip()
+        if current:
+            names = {row["name"] for row in rows}
+            mapped = next((row["name"] for row in rows if str(row["id"]) == current), "")
+            if mapped and mapped != current and current not in names:
+                config["model"] = mapped
+                core.save_config(config)
+                self.session.emit({"type": "snapshot", "data": self.session.snapshot()})
         return {"ok": True, "models": rows, "reasoning": data.get("reasoning") or ""}
 
     def _doctor(self) -> dict:
