@@ -43,6 +43,17 @@
       <div class="offline-hint">一键启动要两个条件：<br>1. Termux 设置文件里 allow-external-apps=true<br>2. 系统设置里给本 App 授予「在 Termux 中执行命令」权限<br>都不行就点「复制启动命令」，去 Termux 里粘贴执行。</div>
     </div>
 
+    <div id="pending" class="approval pending" hidden>
+      <div class="approval-head">
+        <span class="tag">等你回答</span>
+        <span class="risk">这条要回豆包 App 点</span>
+      </div>
+      <div id="pd-body" class="approval-op"></div>
+      <div class="approval-actions">
+        <button id="pd-resume" class="btn soft">答完了 · 续等</button>
+      </div>
+    </div>
+
     <div id="approval" class="approval" hidden>
       <div class="approval-head">
         <span class="tag">待审批</span>

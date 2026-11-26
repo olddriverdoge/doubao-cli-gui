@@ -10,6 +10,9 @@
   const timerEl = document.getElementById("timer");
   const cidEl = document.getElementById("cid");
   const approvalBox = document.getElementById("approval");
+  const pendingBox = document.getElementById("pending");
+  const pdBody = document.getElementById("pd-body");
+  const pdResume = document.getElementById("pd-resume");
   const offlineBox = document.getElementById("offline");
   const bootBtn = document.getElementById("boot");
   const openTermuxBtn = document.getElementById("opentermux");
@@ -26,7 +29,7 @@
   const sheetBody = document.getElementById("sheet-body");
   const toastEl = document.getElementById("toast");
 
-  const state = { status: "idle", phase: "空闲", approval: null, cid: "", rendered: new Set(), offline: false, appVersion: "" };
+  const state = { status: "idle", phase: "空闲", approval: null, pending: null, stalled: false, cid: "", rendered: new Set(), offline: false, appVersion: "" };
   let nativeMode = false;
   let toastTimer = 0;
 
@@ -141,16 +144,22 @@
     state.phase = data.phase || "";
     state.offline = !!data.offline;
     state.approval = data.approval || null;
+    state.pending = data.pending || null;
+    state.stalled = !!data.stalled;
     if (data.conversationId !== undefined) {
       state.cid = data.conversationId || "";
       cidEl.textContent = state.cid ? "会话 " + state.cid.slice(-6) : "无会话";
     }
-    dot.className = "dot " + (state.status === "approval" ? "approval" : state.status);
+    const busy = state.status === "running" || state.status === "approval";
+    const attention = busy || state.status === "stalled" || state.status === "input";
+    dot.className = "dot " + (attention ? "approval" : state.status);
     phaseEl.textContent = state.phase || "空闲";
-    const running = state.status === "running" || state.status === "approval";
-    sendBtn.disabled = running;
-    stopBtn.hidden = !running;
+    const resumeChip = document.querySelector('.quick [data-act="resume"]');
+    if (resumeChip) resumeChip.textContent = state.stalled ? "⟳ 重新接管" : "⟳ 续等";
+    sendBtn.disabled = busy;
+    stopBtn.hidden = !busy;
     renderApproval();
+    renderPending();
     syncOffline();
   }
 
@@ -171,6 +180,29 @@
       (approval.operation ? " · " + escapeHtml(approval.operation) : "");
     apMeta.textContent = approval.full_access ? "本轮请求完全访问权限" : "cwd " + (approval.workspace || state.cid || "");
     apTurn.hidden = !!approval.full_access;
+  }
+
+  function renderPending() {
+    const pending = state.pending;
+    if (!pending || !(pending.items || []).length) {
+      pendingBox.hidden = true;
+      return;
+    }
+    pendingBox.hidden = false;
+    const rows = [];
+    (pending.items || []).forEach((item) => {
+      if (item.kind === "input") {
+        (item.questions || []).forEach((question) => {
+          rows.push("<div>· " + escapeHtml(question.text || "（问题文本没带出来）") + "</div>");
+          (question.options || []).forEach((option) => {
+            rows.push('<div class="pending-option">- ' + escapeHtml(option) + "</div>");
+          });
+        });
+      } else {
+        rows.push("<div>· 需要确认：" + escapeHtml((item.options || []).join("、") || "（选项没带出来）") + "</div>");
+      }
+    });
+    pdBody.innerHTML = rows.join("");
   }
 
   // ------------------------------------------------------------ SSE
@@ -234,6 +266,12 @@
   apOnce.addEventListener("click", () => post("/api/approve", { allow: true, scope: "once" }));
   apTurn.addEventListener("click", () => post("/api/approve", { allow: true, scope: "turn" }));
   apDeny.addEventListener("click", () => post("/api/approve", { allow: false, scope: "once" }));
+  pdResume.addEventListener("click", () => {
+    post("/api/resume").then((result) => {
+      if (result && result.ok) toast("已接管这一轮（不重发）");
+      else toast((result && result.error) || "接管失败");
+    });
+  });
 
   // ------------------------------------------------------------ 弹层
 

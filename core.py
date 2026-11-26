@@ -29,7 +29,7 @@ from typing import Callable, Dict, List, Optional
 
 import term_io
 
-VERSION = "0.1.10"
+VERSION = "0.1.11"
 
 CONFIG_DIR = os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "doubao-cli-gui"
@@ -530,6 +530,58 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+AUTO_RESUME_LIMIT = 3
+AUTO_RESUME_DELAY = 2.0
+
+
+def pending_view(pending) -> Optional[dict]:
+    """把 CLI 的 pending 数组收敛成前端能直接渲染的结构。"""
+    if not isinstance(pending, list) or not pending:
+        return None
+    items: List[dict] = []
+    for entry in pending[:4]:
+        if not isinstance(entry, dict):
+            continue
+        kind = str(entry.get("kind") or "")
+        if kind == "input":
+            questions = []
+            for question in entry.get("questions") or []:
+                if not isinstance(question, dict):
+                    continue
+                text = question.get("title") or question.get("text") or question.get("question") or ""
+                options = []
+                for option in question.get("options") or []:
+                    if isinstance(option, str):
+                        options.append(option)
+                    elif isinstance(option, dict):
+                        value = option.get("title") or option.get("text") or option.get("label") or option.get("value")
+                        if value:
+                            options.append(str(value))
+                questions.append({"text": str(text or ""), "options": options})
+            items.append({"kind": "input", "questions": questions, "clarifyId": entry.get("clarifyId")})
+        elif kind == "approval":
+            options = []
+            for option in entry.get("items") or []:
+                if isinstance(option, str):
+                    options.append(option)
+                elif isinstance(option, dict):
+                    value = option.get("title") or option.get("text") or option.get("label")
+                    if value:
+                        options.append(str(value))
+            items.append({"kind": "approval", "scene": entry.get("scene"), "options": options})
+    return {"items": items} if items else None
+
+
+def idle_turn(payload: dict) -> bool:
+    """服务端没确认到任何任务节点，也没有进度文本 → 多半是本地执行器断线。"""
+    tasks = payload.get("tasks") or {}
+    try:
+        total = int(tasks.get("total") or 0)
+    except (TypeError, ValueError):
+        total = 0
+    return total == 0 and not str(payload.get("progress") or "").strip()
+
+
 class Session:
     """一个对话的状态机，对外只发事件。"""
 
@@ -545,6 +597,9 @@ class Session:
         self.started_at = 0.0
         self.approval: Optional[dict] = None
         self.auto_backup: Optional[list] = None
+        self.pending: Optional[dict] = None
+        self.stalled = False
+        self.auto_resume = 0
         self._load_history()
         threading.Thread(target=self._ticker, daemon=True).start()
 
@@ -590,6 +645,8 @@ class Session:
             "startedAt": self.started_at,
             "elapsed": int(time.time() - self.started_at) if self.started_at else 0,
             "approval": self.approval,
+            "pending": self.pending,
+            "stalled": self.stalled,
             "messages": self.messages,
             "version": VERSION,
             "config": {
@@ -617,6 +674,8 @@ class Session:
                 "runId": self.run_id,
                 "startedAt": self.started_at,
                 "approval": self.approval,
+                "pending": self.pending,
+                "stalled": self.stalled,
             },
         }
 
@@ -639,6 +698,9 @@ class Session:
             return {"ok": False, "error": "消息不能为空"}
         if self.status in ("running", "approval"):
             return {"ok": False, "error": "上一轮还没结束"}
+        self.pending = None
+        self.stalled = False
+        self.auto_resume = 0
         self._add_message("user", text)
         self.status = "running"
         self.phase = "提交中"
@@ -775,33 +837,105 @@ class Session:
         if self.auto_backup is not None:
             self.config["auto_approve"] = self.auto_backup
             self.auto_backup = None
-        text = Runner._reply_text(turn.result)
+        payload = turn.result or {}
+        status = str(payload.get("status") or "")
+        pending = pending_view(payload.get("pending"))
+        if pending or status == "waiting_input":
+            self._finish_input(pending)
+            return
+        text = Runner._reply_text(payload)
         if text:
             self.status = "done"
             self.phase = "完成"
+            self.stalled = False
+            self.pending = None
             self._add_message("assistant", text)
         elif turn.error:
             message = turn.error
             lowered = message.lower()
+            # 只有“等不到/连接断”才接管；权限被拒、参数错误这类重试也没用，直接判失败
+            recoverable = any(key in lowered for key in ("timeout", "terminated", "disconnect", "econnreset", "socket", "closed"))
             if "terminated" in lowered:
-                message = "连接中断（terminated）。任务可能仍在服务端运行：点“续等”，不要重发同一条消息"
+                message = "连接中断（terminated）。任务仍在服务端：要用「续等」接管，不要重发"
             elif "timeout" in lowered:
-                message = "等待超时，任务没有被取消：点“续等”继续等同一轮"
-            self.status = "error"
-            self.phase = "失败"
-            self._add_message("error", message)
-        else:
-            status = str((turn.result or {}).get("status") or "")
-            if status in ("running", "unknown", "waiting_input"):
-                self.status = "done"
-                self.phase = "未确认完成"
-                self._add_message("system", "任务已受理但未确认完成。可点“续等”，不会重发消息")
+                message = "等待超时，任务没被取消：要用「续等」接管同一轮，不要重发"
+            if recoverable and self.conversation_id and self.run_id and self.auto_resume < AUTO_RESUME_LIMIT:
+                self._schedule_auto_resume(message)
+            elif recoverable and self.conversation_id and self.run_id:
+                self.status = "stalled"
+                self.phase = "执行器断线 · 需接管"
+                self.stalled = True
+                self._add_message("system", message)
             else:
-                self.status = "done"
-                self.phase = turn.phase
-                self._add_message("system", f"本轮结束 · {turn.phase}")
+                self.status = "error"
+                self.phase = "失败"
+                self.stalled = False
+                self._add_message("error", message)
+        elif status in ("running", "unknown") and idle_turn(payload):
+            # 服务端没建任务节点、也没有进度：本地执行器已经断线（CLI 进程退出或超时）
+            if self.conversation_id and self.run_id and self.auto_resume < AUTO_RESUME_LIMIT:
+                self._schedule_auto_resume("服务端没确认到任务进度，本地执行器疑似断线")
+            else:
+                self.status = "stalled"
+                self.phase = "执行器断线 · 需接管"
+                self.stalled = True
+                self._add_message(
+                    "system",
+                    "本地执行器已断线（服务端没确认到任何任务节点）。\n"
+                    "点「续等」用同一个 runId 接管，不要重发这条消息；如果 App 里有待确认卡片，先在 App 点掉。",
+                )
+        elif status in ("running", "unknown"):
+            self.status = "done"
+            self.phase = "未确认完成"
+            self._add_message("system", "任务已受理但未确认完成。可点“续等”，不会重发消息")
+        else:
+            self.status = "done"
+            self.phase = turn.phase
+            self.stalled = False
+            self.pending = None
+            self._add_message("system", f"本轮结束 · {turn.phase}")
         self._save_history()
         self.emit(self._status_event())
+
+    def _finish_input(self, pending: Optional[dict]) -> None:
+        """agent 在等用户回答：展示问题，回答只能回豆包 App。"""
+        self.pending = pending
+        self.stalled = False
+        self.status = "input"
+        self.phase = "等你回答"
+        lines: List[str] = []
+        for item in (pending or {}).get("items") or []:
+            if item.get("kind") == "input":
+                for question in item.get("questions") or []:
+                    text = (question.get("text") or "（CLI 没带出问题文本）").strip()
+                    lines.append("· " + text)
+                    for option in question.get("options") or []:
+                        lines.append("    - " + str(option))
+            elif item.get("kind") == "approval":
+                lines.append("· 需要你确认的操作：" + ("、".join(item.get("options") or []) or "（选项未带出）"))
+        body = "\n".join(lines) or "（CLI 只给出了状态，没有带出问题内容）"
+        self._add_message("system", "agent 在等你回答，这条要回豆包 App 点：\n" + body)
+        self._save_history()
+        self.emit(self._status_event())
+
+    def _schedule_auto_resume(self, reason: str) -> None:
+        """超时/断线后自动用同一 runId 接管，绝不重发消息。"""
+        self.auto_resume += 1
+        attempt = self.auto_resume
+        self.status = "stalled"
+        self.phase = f"执行器断线 · 自动接管 {attempt}/{AUTO_RESUME_LIMIT}"
+        self.stalled = True
+        self._add_message("system", f"{reason}。自动接管第 {attempt} 次（不重发消息）")
+        self._save_history()
+        self.emit(self._status_event())
+
+        def worker() -> None:
+            time.sleep(AUTO_RESUME_DELAY)
+            result = self.resume(auto=True)
+            if not result.get("ok"):
+                self._notice(f"自动接管没起来：{result.get('error') or '未知原因'}")
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def _ticker(self) -> None:
         """每秒推进 elapsed，并让前端刷新计时。"""
@@ -812,9 +946,11 @@ class Session:
 
     # -- 续等
 
-    def resume(self) -> dict:
+    def resume(self, auto: bool = False) -> dict:
         if self.status in ("running", "approval"):
             return {"ok": False, "error": "当前有任务在跑"}
+        if not auto:
+            self.auto_resume = 0
         if not self.conversation_id:
             return {"ok": False, "error": "还没有会话 ID"}
         argv = self.runner._bin_argv("headless", "sessions", "wait", self.conversation_id)
@@ -824,7 +960,9 @@ class Session:
             argv += ["--profile", str(self.config["profile"])]
         argv += ["--timeout", str(int(self.config.get("timeout") or 600)), "--json"]
         self.status = "running"
-        self.phase = "续等"
+        self.phase = "续等" if not auto else "自动接管"
+        self.stalled = False
+        self.pending = None
         self.started_at = time.time()
         self.emit(self._status_event())
         turn = self.runner.start(argv, "wait")

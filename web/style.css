@@ -408,3 +408,5 @@ html, body {
   color: var(--accent);
   font-weight: 500;
 }
+
+.approval.pending #pd-body .pending-option{padding-left:14px;opacity:.72;}
