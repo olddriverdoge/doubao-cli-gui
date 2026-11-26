@@ -124,7 +124,22 @@ PY
   fi
 }
 
+bridge() {
+  CFG="$CONF_DIR/config.json"
+  TOKEN="$(sed -n 's/.*"bridge_token": *"\([^"]*\)".*/\1/p' "$CFG" 2>/dev/null | head -n 1)"
+  if [ -z "$TOKEN" ]; then
+    echo "还没有 token：先 doubao-gui start，再执行一次"
+    return 1
+  fi
+  echo "token   $TOKEN"
+  echo "脚本    $URL/bridge.user.js"
+  echo "用法    浏览器打开上面的地址装脚本；浮动条里点「填 token」粘进去"
+}
+
 case "${1:-start}" in
+  bridge)
+    bridge
+    ;;
   version)
     version
     ;;
@@ -157,7 +172,7 @@ case "${1:-start}" in
     fi
     ;;
   *)
-    echo "用法：doubao-gui [start|stop|restart|status|version|open|logs|run]"
+    echo "用法：doubao-gui [start|stop|restart|status|version|bridge|open|logs|run]"
     exit 2
     ;;
 esac
