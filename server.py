@@ -12,11 +12,13 @@ import json
 import os
 import queue
 import re
+import secrets
 import shutil
 import subprocess
 import sys
 import threading
 import time
+import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
@@ -65,12 +67,135 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- 通用响应
 
+    # -- 网页桥接
+
+    def _cors(self) -> None:
+        """只有 /api/web/* 开放跨域：网页脚本在 doubao.com 上直连本机 8765。"""
+        if not urlparse(self.path).path.startswith("/api/web/"):
+            return
+        origin = self.headers.get("Origin") or "*"
+        self.send_header("Access-Control-Allow-Origin", origin)
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, X-Doubao-Bridge")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Max-Age", "600")
+        self.send_header("Vary", "Origin")
+
+    def do_OPTIONS(self) -> None:
+        self.send_response(204)
+        self._cors()
+        self.end_headers()
+
+    def _bridge_token(self) -> str:
+        return str(self.session.config.get("bridge_token") or "")
+
+    def _bridge_guard(self) -> bool:
+        """写操作必须带 token：8765 一旦开放跨域，任何网页都能打过来。"""
+        token = self._bridge_token()
+        if not token:
+            self._json({"ok": False, "error": "服务端还没生成 bridge token，重启一次 doubao-gui"}, 503)
+            return False
+        if (self.headers.get("X-Doubao-Bridge") or "").strip() != token:
+            self._json({"ok": False, "error": "token 不对"}, 401)
+            return False
+        return True
+
+    def _web_capture(self, payload: dict) -> dict:
+        """落盘网页侧样本：请求体、SSE 帧、授权体。
+
+        帧结构只能从真实样本反推，所以先存盘再对齐，不靠猜。
+        """
+        folder = os.path.join(core.CONFIG_DIR, "web-capture")
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except OSError as exc:
+            return {"ok": False, "error": str(exc)}
+        kind = re.sub(r"[^a-z0-9_-]+", "-", str(payload.get("kind") or "misc").lower())[:40] or "misc"
+        name = f"{time.strftime('%Y%m%d-%H%M%S')}-{kind}-{uuid.uuid4().hex[:6]}.json"
+        try:
+            with open(os.path.join(folder, name), "w", encoding="utf-8") as handle:
+                handle.write(json.dumps(payload, ensure_ascii=False)[:200000])
+        except OSError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "file": name, "folder": folder}
+
+    def _web_send(self, payload: dict) -> dict:
+        """网页发来的消息交给本地 CLI 执行。
+
+        Runner.start() 是非阻塞的，所以这里立刻返回受理结果；conversationId
+        在新会话里要等 CLI 打印出来，页面侧靠轮询 /api/web/state 补。
+        """
+        text = str(payload.get("text") or "").strip()
+        if not text:
+            return {"ok": False, "error": "消息不能为空"}
+        session = self.session
+        if session.status in ("running", "approval"):
+            return {"ok": False, "busy": True, "error": "上一轮还没结束，排队请稍后"}
+        if payload.get("fresh"):
+            # 页面开了新会话：chat 会话不能接 work 任务（CLI 会报 requires --mode work）
+            session.new_session()
+        cid = str(payload.get("conversationId") or "").strip()
+        if cid and cid != session.conversation_id:
+            switched = session.switch(cid)
+            if not switched.get("ok"):
+                return switched
+        changed = False
+        for key, value in (
+            ("mode", payload.get("mode")),
+            ("workspace", payload.get("workspace")),
+            ("permission", payload.get("permission")),
+            ("model", payload.get("model")),
+            ("timeout", payload.get("timeout")),
+        ):
+            if value in (None, ""):
+                continue
+            session.config[key] = int(value) if key == "timeout" else str(value)
+            changed = True
+        if changed:
+            core.save_config(session.config)
+        result = session.send(text)
+        if not result.get("ok"):
+            return result
+        snap = session.bridge_state()
+        return {
+            "ok": True,
+            "accepted": True,
+            "conversationId": snap["conversationId"],
+            "runId": snap["runId"],
+            "status": snap["status"],
+            "pendingCid": not bool(snap["conversationId"]),
+        }
+
+    def _web_route(self, path: str, payload: dict) -> None:
+        if path == "/api/web/capture":
+            if not self._bridge_guard():
+                return
+            self._json(self._web_capture(payload))
+            return
+        if not self._bridge_guard():
+            return
+        if path == "/api/web/send":
+            self._json(self._web_send(payload))
+        elif path == "/api/web/stop":
+            self._json(self.session.stop())
+        elif path == "/api/web/approve":
+            self._json(
+                self.session.approve(
+                    bool(payload.get("allow")),
+                    str(payload.get("scope") or "once"),
+                )
+            )
+        elif path == "/api/web/resume":
+            self._json(self.session.resume())
+        else:
+            self._json({"ok": False, "error": "未知的桥接接口"}, 404)
+
     def _json(self, payload: dict, status: int = 200) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self._cors()
         self.end_headers()
         self.wfile.write(body)
 
@@ -87,6 +212,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path = urlparse(self.path).path
+        if path == "/api/web/ping":
+            self._json({
+                "ok": True,
+                "bridge": True,
+                "version": core.VERSION,
+                "tokenRequired": bool(self._bridge_token()),
+                "capture": True,
+            })
+            return
+        if path == "/api/web/state":
+            if not self._bridge_guard():
+                return
+            self._json({"ok": True, "data": self.session.bridge_state()})
+            return
         if path == "/api/events":
             self._sse()
             return
@@ -207,6 +346,9 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         path = urlparse(self.path).path
         payload = self._read_json()
+        if path.startswith("/api/web/"):
+            self._web_route(path, payload)
+            return
         if path == "/api/send":
             try:
                 result = self.session.send(str(payload.get("text") or ""))
@@ -910,6 +1052,12 @@ def serve(host: str, port: int, open_url: bool, bin_override: str = "", bin_args
     config["bin"] = bin_path
     config["binArgs"] = bin_args
 
+    token = str(config.get("bridge_token") or "")
+    if not token:
+        token = secrets.token_hex(8)
+        config["bridge_token"] = token
+        core.save_config(config)
+
     broker = Broker()
     session = core.Session(config, broker.publish)
     Handler.session = session
@@ -927,6 +1075,7 @@ def serve(host: str, port: int, open_url: bool, bin_override: str = "", bin_args
     print(f"  地址    {address}")
     print(f"  工作区  {config.get('workspace')}")
     print(f"  profile {config.get('profile') or 'default'} · 权限 {config.get('permission')}")
+    print(f"  桥接    {config.get('bridge_token')}（网页脚本里填这个）")
     print("  Ctrl+C 停止")
 
     if open_url:

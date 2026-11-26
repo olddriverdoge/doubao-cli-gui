@@ -29,7 +29,7 @@ from typing import Callable, Dict, List, Optional
 
 import term_io
 
-VERSION = "0.1.13"
+VERSION = "0.1.14"
 
 CONFIG_DIR = os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "doubao-cli-gui"
@@ -868,8 +868,60 @@ class Session:
                 "replySchema": self.config.get("reply_schema") or "",
                 "attach": list(self.config.get("attach") or []),
                 "showTrace": self.config.get("show_trace", True),
+                "bridgeToken": self.config.get("bridge_token") or "",
             },
             "permissions": PERM_LABELS,
+        }
+
+    def _cloud_settle(self) -> str:
+        """问云端这一轮到底结束了没有。
+
+        CLI 进程退出不等于 run 收尾。云端还报 running 时官方页面会一直转圈，
+        所以结束判定以 sessions status 为准，不靠本地猜。
+        """
+        if not (self.conversation_id and self.run_id):
+            return ""
+        argv = self.runner._bin_argv("headless", "sessions", "status", self.conversation_id)
+        argv += ["--run", self.run_id]
+        if self.config.get("profile"):
+            argv += ["--profile", str(self.config["profile"])]
+        argv += ["--json"]
+        try:
+            result = subprocess.run(argv, capture_output=True, text=True, timeout=8)
+        except Exception:
+            return ""
+        if result.returncode != 0:
+            return ""
+        try:
+            payload = json.loads(result.stdout)
+        except Exception:
+            return ""
+        if str(payload.get("status") or "") != "completed":
+            return ""
+        return Runner._reply_text(payload)
+
+    def bridge_state(self) -> dict:
+        """给网页桥接用的精简状态：够画一条浮动条，不夹带整份历史。"""
+        return {
+            "status": self.status,
+            "phase": self.phase,
+            "conversationId": self.conversation_id,
+            "runId": self.run_id,
+            "stalled": self.stalled,
+            "approval": self.approval,
+            "pending": self.pending,
+            "canSend": self.status not in ("running", "approval"),
+            "canResume": bool(self.conversation_id and self.run_id),
+            "canStop": self.status in ("running", "approval", "stalled"),
+            "workspace": self.config.get("workspace"),
+            "mode": self.config.get("mode"),
+            "permission": self.config.get("permission"),
+            "model": self.config.get("model"),
+            "profile": self.config.get("profile"),
+            "timeout": int(self.config.get("timeout") or 600),
+            "version": VERSION,
+            "messageCount": len(self.messages),
+            "logs": self.logs[-40:],
         }
 
     def _status_event(self) -> dict:
@@ -1139,9 +1191,24 @@ class Session:
                     "点「续等」用同一个 runId 接管，不要重发这条消息；如果 App 里有待确认卡片，先在 App 点掉。",
                 )
         elif status in ("running", "unknown"):
-            self.status = "done"
-            self.phase = "未确认完成"
-            self._add_message("system", "任务已受理但未确认完成。可点“续等”，不会重发消息")
+            # 云端还报 running 就说明这一轮没收尾：官方页面会一直显示“运行中”。
+            # 记成 done 会让用户以为结束了，不去续等，页面就永远转圈。
+            settled = self._cloud_settle()
+            if settled:
+                self.status = "done"
+                self.phase = "完成"
+                self.stalled = False
+                self.pending = None
+                self._add_message("assistant", settled)
+            else:
+                self.status = "stalled"
+                self.phase = "执行器断线 · 云端未收尾"
+                self.stalled = True
+                self._add_message(
+                    "system",
+                    "云端仍显示这一轮在运行，本地执行器已经退出。\n"
+                    "官方页面会一直转圈：点「续等」用同一 runId 接管收尾，不要重发。",
+                )
         else:
             self.status = "done"
             self.phase = turn.phase
