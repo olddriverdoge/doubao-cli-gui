@@ -100,15 +100,22 @@ else
 fi
 
 # ---------------------------------------------------------------- 4. 铺文件
-mkdir -p "$DEST"
-for item in core.py server.py web scripts tools; do
-  [ -e "$SRC/$item" ] || continue
-  rm -rf "${DEST:?}/$item"
-  cp -R "$SRC/$item" "$DEST/" || die "复制 $item 失败"
-done
-cp "$SRC/README.md" "$DEST/" 2>/dev/null || true
-cp "$SRC/LICENSE" "$DEST/" 2>/dev/null || true
-cp "$SRC/install.sh" "$DEST/" 2>/dev/null || true
+# 在 clone 目录里跑本脚本时 SRC 与 DEST 是同一个目录，先 rm -rf 再 cp 会把源删掉，
+# 所以这种情况直接跳过复制（代码本来就在目标目录里）。
+if [ "$SRC" = "$DEST" ]; then
+  say "· 代码已在 $DEST，跳过复制"
+else
+  mkdir -p "$DEST"
+  for item in core.py server.py web scripts tools; do
+    [ -e "$SRC/$item" ] || continue
+    rm -rf "${DEST:?}/$item"
+    cp -R "$SRC/$item" "$DEST/" || die "复制 $item 失败"
+  done
+  cp "$SRC/README.md" "$DEST/" 2>/dev/null || true
+  cp "$SRC/LICENSE" "$DEST/" 2>/dev/null || true
+  cp "$SRC/install.sh" "$DEST/" 2>/dev/null || true
+fi
+[ -f "$DEST/core.py" ] && [ -f "$DEST/server.py" ] || die "代码不完整（缺 core.py/server.py），用远端安装器重装：curl -fsSL https://raw.githubusercontent.com/olddriverdoge/doubao-cli-gui/main/install.sh | bash"
 say "✓ 代码已铺到 $DEST"
 
 chmod +x "$DEST/scripts/doubao-gui"
