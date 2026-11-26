@@ -277,6 +277,187 @@
     return node;
   }
 
+  // ------------------------------------------------------------ 登录
+
+  let loginPoll = 0;
+  let loginMiss = 0;
+
+  function loginPanel(body, readProfile) {
+    const wrap = document.createElement("div");
+    wrap.className = "login";
+
+    const status = document.createElement("div");
+    status.className = "login-status";
+
+    const line = document.createElement("div");
+    line.className = "hint";
+
+    const qr = document.createElement("img");
+    qr.className = "qr";
+    qr.alt = "登录二维码";
+    qr.hidden = true;
+
+    const qrTip = document.createElement("div");
+    qrTip.className = "hint qr-tip";
+    qrTip.hidden = true;
+
+    const profile = document.createElement("input");
+    profile.type = "text";
+    profile.placeholder = "profile 名称，留空用默认";
+    const profileField = field("登录 profile（可留空）", profile);
+
+    const primaryRow = document.createElement("div");
+    primaryRow.className = "row";
+    const startBtn = button("扫码登录", "primary", () => startLogin());
+    startBtn.disabled = true;
+    const cancelBtn = button("取消", "ghost", () => cancelLogin());
+    cancelBtn.hidden = true;
+    primaryRow.appendChild(startBtn);
+    primaryRow.appendChild(cancelBtn);
+
+    const secondRow = document.createElement("div");
+    secondRow.className = "row";
+    const logoutBtn = button("退出登录", "danger", () => logout());
+    logoutBtn.hidden = true;
+    secondRow.appendChild(logoutBtn);
+
+    wrap.appendChild(status);
+    wrap.appendChild(line);
+    wrap.appendChild(qr);
+    wrap.appendChild(qrTip);
+    if (!readProfile) wrap.appendChild(profileField);
+    wrap.appendChild(primaryRow);
+    wrap.appendChild(secondRow);
+    body.appendChild(wrap);
+
+    let waiting = false;
+
+    function render(result) {
+      const data = result || {};
+      const stateName = data.state || "idle";
+      const loggedIn = !!data.loggedIn || stateName === "ok";
+      status.textContent = (loggedIn ? "已登录" : data.probed ? "未登录" : "检测中…")
+        + (data.accountId ? " · " + data.accountId : "")
+        + (data.profile ? " · profile " + data.profile : "");
+
+      if (!waiting && !readProfile && data.profile) profile.value = data.profile;
+      profile.disabled = waiting;
+
+      if (loggedIn && stateName !== "waiting") {
+        waiting = false;
+        line.textContent = "这台机器已登录，可以直接派任务。";
+        qr.hidden = true;
+        qrTip.hidden = true;
+        cancelBtn.hidden = true;
+        logoutBtn.hidden = false;
+        startBtn.disabled = false;
+        startBtn.textContent = "重新登录";
+        return;
+      }
+
+      logoutBtn.hidden = true;
+
+      if (stateName === "waiting") {
+        waiting = true;
+        line.textContent = "请用豆包 App 扫码确认（已等 " + (data.elapsed || 0) + " 秒）"
+          + (data.detail ? " · " + data.detail : "");
+        if (data.qr) {
+          qr.src = data.qr;
+          qr.hidden = false;
+          const age = data.qrAge || 0;
+          if (age >= 90) {
+            qrTip.textContent = "二维码已等 " + age + " 秒，可能过期了，建议刷新";
+            qrTip.hidden = false;
+          } else {
+            qrTip.textContent = "";
+            qrTip.hidden = true;
+          }
+          startBtn.textContent = "刷新二维码";
+          startBtn.disabled = false;
+        } else {
+          qr.hidden = true;
+          qrTip.hidden = true;
+          startBtn.textContent = "正在生成…";
+          startBtn.disabled = true;
+        }
+        cancelBtn.hidden = false;
+        cancelBtn.disabled = false;
+        return;
+      }
+
+      waiting = false;
+      qr.hidden = true;
+      qrTip.hidden = true;
+      cancelBtn.hidden = true;
+      startBtn.disabled = false;
+      startBtn.textContent = data.probed ? "扫码登录" : "检测中…";
+      if (stateName === "failed") {
+        line.textContent = "登录没成功：" + (data.detail || "未知原因");
+      } else if (data.detail && data.detail !== "已登录") {
+        line.textContent = data.detail;
+      } else {
+        line.textContent = "点「扫码登录」用豆包 App 扫一下，成功后这台机器就能真正执行任务。";
+      }
+    }
+
+    function poll() {
+      clearTimeout(loginPoll);
+      loginPoll = setTimeout(async () => {
+        const result = await getJson("/api/login");
+        if (!result || result.ok === false) {
+          loginMiss += 1;
+          if (loginMiss >= 5) {
+            loginMiss = 0;
+            line.textContent = "和本地服务失去联系了，刷新页面或重开 Doubao GUI 再试。";
+            return;
+          }
+        } else {
+          loginMiss = 0;
+        }
+        render(result);
+        if (result && result.state === "waiting") poll();
+      }, 2000);
+    }
+
+    async function startLogin() {
+      clearTimeout(loginPoll);
+      qr.hidden = true;
+      qrTip.hidden = true;
+      startBtn.disabled = true;
+      startBtn.textContent = "正在生成…";
+      line.textContent = "正在向 CLI 申请二维码…";
+      const force = waiting;
+      const name = (readProfile ? readProfile() : profile.value).trim();
+      const result = await post("/api/login", { timeout: 180, profile: name, refresh: force });
+      render(result);
+      if (result && result.state === "waiting") poll();
+      else if (result && result.ok === false) toast(result.error || "申请二维码失败");
+    }
+
+    async function cancelLogin() {
+      clearTimeout(loginPoll);
+      cancelBtn.disabled = true;
+      const result = await post("/api/login/cancel", {});
+      render(result);
+      toast("已取消这次扫码");
+    }
+
+    async function logout() {
+      clearTimeout(loginPoll);
+      logoutBtn.disabled = true;
+      const result = await post("/api/logout", {});
+      logoutBtn.disabled = false;
+      render(result);
+      if (result && result.ok === false) toast(result.error || "退出登录失败");
+      else toast("已退出登录");
+    }
+
+    getJson("/api/login").then((result) => {
+      render(result);
+      if (result && result.state === "waiting") poll();
+    });
+  }
+
   async function openSettings() {
     const snapshot = await getJson("/api/state");
     const data = (snapshot && snapshot.data) || {};
@@ -336,6 +517,8 @@
       profile.type = "text";
       profile.value = config.profile || "";
       body.appendChild(field("profile 名", profile));
+
+      loginPanel(body, () => profile.value);
 
       const hint = document.createElement("div");
       hint.className = "hint";
@@ -407,6 +590,7 @@
           row.appendChild(text);
           body.insertBefore(row, body.firstChild);
         });
+        if ((result.checks || []).some((item) => !item.ok)) loginPanel(body);
       });
     });
   }

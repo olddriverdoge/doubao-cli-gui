@@ -26,6 +26,51 @@ SLEEP = float(os.environ.get("MOCK_SLEEP") or "0.05")
 SKIP = os.environ.get("MOCK_SKIP") == "1"
 STATUS = os.environ.get("MOCK_STATUS") or "completed"
 
+# 登录相关：设了 MOCK_LOGIN_MARKER 才有登录态概念（未设时兼容老用例，恒为已登录）
+MARK = os.environ.get("MOCK_LOGIN_MARKER") or ""
+FORCE_LOGIN = os.environ.get("MOCK_LOGGED_IN")
+LOGIN_SECONDS = float(os.environ.get("MOCK_LOGIN_SECONDS") or "0.3")
+
+BLOCK_CHARS = {(0, 0): " ", (1, 0): "\u2580", (0, 1): "\u2584", (1, 1): "\u2588"}
+
+
+def logged_in() -> bool:
+    if FORCE_LOGIN is not None:
+        return FORCE_LOGIN == "1"
+    if not MARK:
+        return True
+    return os.path.exists(MARK)
+
+
+def qr_grid(seed: int) -> list:
+    """21x21 模块矩阵：三个角是定位图案，其余按 seed 填不同花纹。"""
+    n = 21
+    grid = [[0] * n for _ in range(n)]
+    for oy, ox in ((0, 0), (0, n - 7), (n - 7, 0)):
+        for y in range(7):
+            for x in range(7):
+                edge = y in (0, 6) or x in (0, 6)
+                inner = 2 <= y <= 4 and 2 <= x <= 4
+                grid[oy + y][ox + x] = 1 if (edge or inner) else 0
+    for i in range(7, 14):
+        grid[i][i] = 1 if seed % 2 else 0
+        grid[i][n - 1 - i] = 1
+        grid[7][i] = 1
+    return grid
+
+
+def qr_art(seed: int) -> str:
+    """按 CLI 的半块字符画法输出：一行字符 = 两行模块。"""
+    grid = qr_grid(seed)
+    grid.append([0] * len(grid[0]))
+    lines = []
+    for row in range(0, len(grid), 2):
+        cells = (BLOCK_CHARS[(grid[row][c], grid[row + 1][c])] for c in range(len(grid[0])))
+        lines.append("".join(cells))
+    return "\n".join(lines)
+
+
+
 
 def err(text: str) -> None:
     sys.stderr.write(text)
@@ -125,10 +170,34 @@ def main(argv: list) -> int:
         out({"model": argv[pos + 1] if pos + 1 < len(argv) else "", "changed": True})
         return 0
     if "status" in argv:
-        out({"loggedIn": True, "accountId": "1342919234290264"})
+        active = logged_in()
+        out({"loggedIn": active, "accountId": "1342919234290264" if active else ""})
         return 0
     if "runtimes" in argv:
         out({"runtimes": [{"name": "local", "available": True, "engine": "node-http-sse", "hostPlatform": "android"}]})
+        return 0
+
+    if "logout" in argv:
+        if MARK and os.path.exists(MARK):
+            os.remove(MARK)
+        out({"ok": True, "loggedIn": False})
+        return 0
+
+    if "login" in argv:
+        sys.stdout.write("请用豆包 App 扫码登录（mock）\n")
+        sys.stdout.write(qr_art(1) + "\n")
+        sys.stdout.flush()
+        time.sleep(LOGIN_SECONDS)
+        sys.stdout.write("二维码已刷新（mock）\n" + qr_art(2) + "\n")
+        sys.stdout.flush()
+        time.sleep(LOGIN_SECONDS)
+        if MARK:
+            directory = os.path.dirname(MARK)
+            if directory:
+                os.makedirs(directory, exist_ok=True)
+            with open(MARK, "w", encoding="utf-8") as handle:
+                handle.write("1")
+        out({"loggedIn": True, "accountId": "1342919234290264"})
         return 0
 
     if "wait" in argv:

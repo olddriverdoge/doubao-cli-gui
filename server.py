@@ -22,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
 import core
+import login_qr
 
 WEB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "web")
 
@@ -98,6 +99,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/doctor":
             self._json(self._doctor())
+            return
+        if path == "/api/login":
+            _login_ensure_probe(self.session.config)
+            self._json({"ok": True, **_login_snapshot()})
             return
         self._static(path)
 
@@ -206,6 +211,18 @@ class Handler(BaseHTTPRequestHandler):
             self._json(self._update_config(payload))
         elif path == "/api/session/action":
             self._json(self._session_action(payload))
+        elif path == "/api/login":
+            try:
+                seconds = int(payload.get("timeout") or 180)
+            except Exception:
+                seconds = 180
+            profile = str(payload.get("profile") or "").strip()
+            refresh = bool(payload.get("refresh"))
+            self._json({"ok": True, **_login_arm(self.session.config, seconds, profile, refresh)})
+        elif path == "/api/login/cancel":
+            self._json(_login_cancel())
+        elif path == "/api/logout":
+            self._json(_logout(self.session.config))
         elif path == "/api/shutdown":
             self._json({"ok": True})
             threading.Thread(target=self.server.shutdown, daemon=True).start()
@@ -360,6 +377,229 @@ class Handler(BaseHTTPRequestHandler):
         else:
             checks.append({"name": "本地执行通道", "ok": False, "detail": (stderr or stdout or "查询失败").strip()[:120]})
         return {"ok": all(item["ok"] for item in checks), "checks": checks}
+
+
+# -- 扫码登录
+
+LOGIN_LOCK = threading.Lock()
+LOGIN = {
+    "state": "idle",
+    "qr": "",
+    "qrAt": 0.0,
+    "detail": "",
+    "accountId": "",
+    "loggedIn": False,
+    "probed": False,
+    "profile": "",
+    "proc": None,
+    "startedAt": 0.0,
+}
+
+
+def _login_snapshot() -> dict:
+    with LOGIN_LOCK:
+        now = time.time()
+        return {
+            "state": LOGIN["state"],
+            "qr": LOGIN["qr"],
+            "qrAge": int(now - LOGIN["qrAt"]) if LOGIN["qrAt"] else 0,
+            "detail": LOGIN["detail"],
+            "accountId": LOGIN["accountId"],
+            "loggedIn": bool(LOGIN["loggedIn"]),
+            "probed": bool(LOGIN["probed"]),
+            "profile": LOGIN["profile"],
+            "elapsed": int(now - LOGIN["startedAt"]) if LOGIN["startedAt"] else 0,
+        }
+
+
+def _login_tail(text: str) -> str:
+    """从登录输出里挑一句人话当失败原因（跳过字符画）。"""
+    rows = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if any(ch in line for ch in "\u2580\u2584\u2588"):
+            continue
+        rows.append(line)
+    return (rows[-1] if rows else "")[:200]
+
+
+def _login_status(config: dict) -> tuple:
+    """跑一次 headless status，返回 (loggedIn, accountId)。"""
+    argv = [str(config["bin"])] + [str(item) for item in (config.get("binArgs") or [])]
+    argv += ["headless", "status", "--json"]
+    if config.get("profile"):
+        argv += ["--profile", str(config["profile"])]
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=25)
+        data = json.loads((result.stdout or "").strip() or "{}")
+        return bool(data.get("loggedIn")), str(data.get("accountId") or "")
+    except Exception:
+        return False, ""
+
+
+def _login_probe(config: dict) -> None:
+    """启动后在后台问一次登录态，不拖慢首屏。"""
+    logged_in, account = _login_status(config)
+    with LOGIN_LOCK:
+        LOGIN["probed"] = True
+        LOGIN["loggedIn"] = logged_in
+        LOGIN["accountId"] = account or ""
+        LOGIN["profile"] = str(config.get("profile") or "")
+        if logged_in and LOGIN["state"] == "idle":
+            LOGIN["detail"] = "已登录"
+
+
+def _login_ensure_probe(config: dict) -> None:
+    with LOGIN_LOCK:
+        if LOGIN["probed"] or LOGIN["proc"] is not None:
+            return
+        LOGIN["probed"] = True  # 先占位，避免并发重复探测
+    threading.Thread(target=_login_probe, args=(config,), daemon=True).start()
+
+
+def _login_pump(proc: subprocess.Popen, config: dict) -> None:
+    buffer = ""
+    last_sig = None
+    try:
+        while True:
+            line = proc.stdout.readline() if proc.stdout else b""
+            if not line:
+                break
+            buffer += line.decode("utf-8", errors="replace")
+            if len(buffer) > 60000:
+                buffer = buffer[-60000:]
+            # 只有字符画有变化才重算，避免每次 readline 都跑一遍 PNG 编码
+            sig = (len(buffer), buffer.count("\u2588"), buffer.count("\u2580"), buffer.count("\u2584"))
+            if sig == last_sig:
+                continue
+            last_sig = sig
+            # 终端会把多张码/进度行堆在一起：只取最近一段连续的字符画行
+            block_chars = set(" \u2588\u2580\u2584")
+            rows = []
+            for line in reversed(buffer.splitlines()):
+                if len(line) >= 21 and all(ch in block_chars for ch in line):
+                    rows.append(line)
+                elif rows:
+                    break
+            url = ""
+            if rows:
+                candidates = ["\n".join(reversed(rows))]
+                for size in (11, 12, 21, 22, 25, 26):
+                    if len(rows) > size:
+                        candidates.append("\n".join(reversed(rows[-size:])))
+                for text in candidates:
+                    url = login_qr.data_url(text)
+                    if url:
+                        break
+            if url:
+                with LOGIN_LOCK:
+                    if url != LOGIN["qr"]:
+                        LOGIN["qr"] = url
+                        LOGIN["qrAt"] = time.time()
+                        LOGIN["detail"] = "等待手机扫码确认"
+    except Exception:
+        pass
+    try:
+        code = proc.wait()
+    except Exception:
+        code = 1
+    logged_in, account = _login_status(config) if code == 0 else (False, "")
+    detail = _login_tail(buffer)
+    with LOGIN_LOCK:
+        if LOGIN.get("proc") is not proc:
+            return  # 已被刷新或取消接管，不要覆盖新状态
+        LOGIN["proc"] = None
+        LOGIN["state"] = "ok" if code == 0 else "failed"
+        LOGIN["loggedIn"] = logged_in
+        if account:
+            LOGIN["accountId"] = account
+        if code == 0:
+            LOGIN["detail"] = "已登录" if logged_in else "扫码流程结束，但状态仍未登录"
+            LOGIN["qr"] = ""
+            LOGIN["qrAt"] = 0.0
+        else:
+            LOGIN["detail"] = detail or "登录未完成"
+
+
+def _login_arm(config: dict, seconds: int, profile: str = "", refresh: bool = False) -> dict:
+    """起一个 headless login 进程后立即返回，二维码由后台线程抓给页面轮询。"""
+    if profile:
+        config["profile"] = profile
+        core.save_config(config)
+        with LOGIN_LOCK:
+            LOGIN["profile"] = profile
+    with LOGIN_LOCK:
+        proc = LOGIN.get("proc")
+        if proc is not None and proc.poll() is None and not refresh:
+            return _login_snapshot()
+    if proc is not None and proc.poll() is None:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    argv = [str(config["bin"])] + [str(item) for item in (config.get("binArgs") or [])]
+    argv += ["headless", "login", "--timeout", str(max(30, int(seconds)))]
+    if config.get("profile"):
+        argv += ["--profile", str(config["profile"])]
+    try:
+        proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    except Exception as exc:
+        with LOGIN_LOCK:
+            LOGIN.update({"state": "failed", "detail": str(exc), "qr": "", "qrAt": 0.0,
+                          "proc": None, "loggedIn": False, "probed": True})
+        return _login_snapshot()
+    with LOGIN_LOCK:
+        LOGIN.update({
+            "state": "waiting", "qr": "", "qrAt": 0.0, "detail": "正在向 CLI 申请二维码…",
+            "accountId": "", "loggedIn": False, "proc": proc,
+            "startedAt": time.time(), "probed": True,
+        })
+    threading.Thread(target=_login_pump, args=(proc, config), daemon=True).start()
+    return _login_snapshot()
+
+
+def _login_cancel() -> dict:
+    with LOGIN_LOCK:
+        proc = LOGIN.get("proc")
+        LOGIN.update({"state": "idle", "qr": "", "qrAt": 0.0, "detail": "", "proc": None,
+                      "accountId": "", "startedAt": 0.0})
+    if proc is not None and proc.poll() is None:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    return {"ok": True, **_login_snapshot()}
+
+
+def _logout(config: dict) -> dict:
+    """退出登录：先停掉还在跑的登录进程，再执行 headless logout。"""
+    with LOGIN_LOCK:
+        proc = LOGIN.get("proc")
+        LOGIN.update({"state": "idle", "qr": "", "qrAt": 0.0, "proc": None, "startedAt": 0.0})
+    if proc is not None and proc.poll() is None:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    argv = [str(config["bin"])] + [str(item) for item in (config.get("binArgs") or [])]
+    argv += ["headless", "logout"]
+    if config.get("profile"):
+        argv += ["--profile", str(config["profile"])]
+    detail = ""
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            detail = _login_tail((result.stdout or "") + (result.stderr or "")) or "退出登录失败"
+    except Exception as exc:
+        detail = str(exc)
+    with LOGIN_LOCK:
+        LOGIN["loggedIn"] = False
+        LOGIN["accountId"] = ""
+        LOGIN["probed"] = True
+        LOGIN["detail"] = "已退出登录" if not detail else detail
+    return {"ok": not detail, "error": detail, **_login_snapshot()}
 
 
 def _entry_from_cmd(path: str) -> str:

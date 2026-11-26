@@ -70,7 +70,7 @@ npm i --prefix D:\PYPJ\tools\dcl doubao-cli@0.23.3
   --bin-arg "D:\PYPJ\tools\dcl\node_modules\doubao-cli\bin\doubao.mjs"
 ```
 
-浏览器打开 `http://127.0.0.1:8766`。登录仍然要扫码：`doubao headless login --profile <profile>`。
+浏览器打开 `http://127.0.0.1:8766`。菜单里的「登录」可以直接扫码：二维码在页面里渲染，过期会提示刷新，可以取消，也能一键退出登录；profile 在登录框里填（等价于 `doubao headless login --profile <profile>`）。
 
 三个 Windows 专属细节：
 
@@ -83,6 +83,7 @@ npm i --prefix D:\PYPJ\tools\dcl doubao-cli@0.23.3
 ```powershell
 .\.venv\Scripts\python.exe tests\test_argv.py
 .\.venv\Scripts\python.exe tests\test_api.py
+.\.venv\Scripts\python.exe tests\test_login.py
 .\.venv\Scripts\python.exe tests\test_ui.py
 # 网关测试要先按 CI 复制页面
 Copy-Item web android\app\src\main\python\web -Recurse
