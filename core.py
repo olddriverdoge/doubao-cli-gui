@@ -2,9 +2,12 @@
 # -*- coding: utf-8 -*-
 """doubao-cli-gui 后端核心。
 
-把社区版 doubao-cli 的 headless 会话跑在 pty 里：stdin / stderr 必须是 TTY
+把社区版 doubao-cli 的 headless 会话跑在一个伪终端里：stdin / stderr 必须是 TTY
 （CLI 用 `process.stdin.isTTY && process.stderr.isTTY` 决定是否弹审批），
-stdout 单独走管道，用来收 `--json` 回执。
+stdout 在 POSIX 上单独走管道，用来收 `--json` 回执。
+
+伪终端由 `term_io` 提供：POSIX 用标准库 pty，Windows 用 ConPTY（pywinpty）。
+本文件不直接 import pty / termios / fcntl / select，保证两个平台同一套逻辑。
 
 上层（HTTP / SSE）只通过 `emit(dict)` 拿事件，不关心命令细节。
 """
@@ -14,19 +17,19 @@ from __future__ import annotations
 import glob
 import json
 import os
-import pty
+import queue
 import re
-import select
 import shutil
 import subprocess
-import termios
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional
 
-VERSION = "0.1.4"
+import term_io
+
+VERSION = "0.1.5"
 
 CONFIG_DIR = os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "doubao-cli-gui"
@@ -36,6 +39,11 @@ SESSION_DIR = os.path.join(CONFIG_DIR, "sessions")
 
 DEFAULT_CONFIG = {
     "bin": "doubao",
+    # 有些平台（尤其 Windows）上 `doubao` 只是个 .cmd 脚本，直接当 argv[0] 起不来。
+    # 这里允许把它换成“解释器 + 脚本”的形式，例如：
+    #   bin = node.exe / python.exe
+    #   binArgs = ["...\node_modules\@bytedance\doubao-cli\dist\index.js"]
+    "binArgs": [],
     "profile": "termux",
     "workspace": "",
     "mode": "work",
@@ -76,6 +84,16 @@ def strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text)
 
 
+def _unwrap(text: str) -> str:
+    """把终端硬折行还原成一行。
+
+    折行是终端按列宽自动插的换行，不是内容里的换行，而且折行处不补空格
+    （ConPTY 上甚至会把 "[y/N]" 拆成 "[" + 换行 + "y/N]"）。审批提示是单行
+    文本，所以匹配前先压掉换行；这个方法只用于“识别提示”，不改动要展示的原文。
+    """
+    return text.replace("\r\n", "").replace("\r", "").replace("\n", "")
+
+
 def load_config() -> dict:
     config = dict(DEFAULT_CONFIG)
     try:
@@ -91,7 +109,12 @@ def load_config() -> dict:
 
 
 def build_session_action(
-    bin_name: str, profile: str, action: str, conversation_id: str, value: str = ""
+    bin_name: str,
+    profile: str,
+    action: str,
+    conversation_id: str,
+    value: str = "",
+    bin_args: Optional[List[str]] = None,
 ) -> tuple:
     """构造 sessions rename/pin/... 的命令，参数非法时返回 (None, 错误)。"""
     action = (action or "").strip()
@@ -108,7 +131,7 @@ def build_session_action(
             return None, "标题最多 20 个字"
     elif value:
         return None, "该操作不接受额外参数"
-    argv = [bin_name, "headless", "sessions", action, conversation_id]
+    argv = [bin_name] + [str(item) for item in (bin_args or [])] + ["headless", "sessions", action, conversation_id]
     if value:
         argv.append(value)
     if profile:
@@ -135,13 +158,14 @@ class Turn:
     argv: List[str]
     label: str
     proc: Optional[subprocess.Popen] = None
-    master: int = -1
+    term: Optional[term_io.Terminal] = None
     conversation_id: str = ""
     run_id: str = ""
     started_at: float = 0.0
     phase: str = "提交中"
     raw_err: str = ""
     stdout_buf: str = ""
+    merged_buf: str = ""
     result: Optional[dict] = None
     error: str = ""
     exit_code: Optional[int] = None
@@ -149,6 +173,7 @@ class Turn:
     finished: bool = False
     sent: bool = False
     accepted: bool = False
+    merged_stream: bool = False
 
 
 class Runner:
@@ -161,6 +186,15 @@ class Runner:
         self.lock = threading.Lock()
 
     # -- 命令构建
+
+    def _bin_argv(self, *args: str) -> List[str]:
+        """argv[0] 是可执行文件；binArgs 允许把 "解释器 + 脚本" 拼在前面。
+
+        Windows 上 npm 装出来的 `doubao` 是 .cmd 脚本，ConPTY 直接起不来，
+        所以支持配置成 `node.exe <cli.js>` 这种形式。
+        """
+        prefix = [str(self.config["bin"])] + [str(item) for item in (self.config.get("binArgs") or [])]
+        return prefix + list(args)
 
     def _local_flags(self) -> List[str]:
         """本地运行时相关参数。
@@ -195,7 +229,7 @@ class Runner:
         return ["--wait", "--timeout", str(int(self.config.get("timeout") or 600)), "--json"]
 
     def build_create(self, message: str) -> List[str]:
-        argv = [self.config["bin"], "headless", "sessions", "create"]
+        argv = self._bin_argv("headless", "sessions", "create")
         argv += ["--mode", str(self.config.get("mode") or "work")]
         argv += self._local_flags()
         argv += self._model_flags()
@@ -207,7 +241,7 @@ class Runner:
         return argv
 
     def build_send(self, conversation_id: str, message: str) -> List[str]:
-        argv = [self.config["bin"], "headless", "sessions", "send", conversation_id]
+        argv = self._bin_argv("headless", "sessions", "send", conversation_id)
         argv += self._local_flags()
         argv += self._model_flags()
         argv += self._profile_flags()
@@ -226,31 +260,10 @@ class Runner:
             self.turn = Turn(argv=argv, label=label)
         turn = self.turn
         try:
-            master, slave = pty.openpty()
-            try:
-                size = shutil.get_terminal_size()
-                import fcntl
-                import struct
-
-                fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", size.lines, size.columns, 0, 0))
-            except Exception:
-                pass
-            env = dict(os.environ)
-            env["TERM"] = "xterm-256color"
-            env.pop("NO_COLOR", None)
-            proc = subprocess.Popen(
-                argv,
-                stdin=slave,
-                stdout=subprocess.PIPE,
-                stderr=slave,
-                close_fds=True,
-                env=env,
-                start_new_session=True,
-            )
-            os.close(slave)
-            os.set_blocking(master, False)
-            turn.proc = proc
-            turn.master = master
+            term = term_io.spawn(argv, env=term_io.child_env())
+            turn.term = term
+            turn.proc = getattr(term, "proc", None)
+            turn.merged_stream = bool(term.merged)
             turn.started_at = time.time()
         except FileNotFoundError:
             turn.error = f"找不到命令：{argv[0]}"
@@ -270,102 +283,93 @@ class Runner:
         return turn
 
     def _pump(self, turn: Turn) -> None:
-        proc = turn.proc
-        master = turn.master
+        """读循环：每条流一个阻塞读线程，主循环只消费队列。
+
+        Windows 的 ConPTY 句柄塞不进 select，所以两个平台统一走「线程 + 队列」，
+        好处是 POSIX 上的 select 依赖被彻底删掉，逻辑只剩一份。
+        """
+        term = turn.term
+        if term is None:
+            self._finalize(turn)
+            return
+        events: "queue.Queue" = queue.Queue()
+        stop_flag = threading.Event()
         err_text = ""
         consumed = 0
-        master_open = True
-        stdout_open = True
+
+        def ingest(kind: str, chunk: bytes) -> None:
+            nonlocal err_text, consumed
+            text = chunk.decode("utf-8", "replace")
+            if kind in ("err", "merged"):
+                err_text += text
+                turn.raw_err = (turn.raw_err + strip_ansi(text))[-4000:]
+                clean = strip_ansi(err_text)
+                # 终端的硬折行会在句子中间插换行（ConPTY 尤其明显，可能把
+                # "[y/N]" 拆成 "[" + 换行 + "y/N]"），匹配前先把折行还原。
+                flow = _unwrap(clean)
+                if turn.approval is None and OPEN_RE.search(flow[consumed:]):
+                    turn.approval = self._parse_approval(flow)
+                    turn.phase = "待审批"
+                    consumed = len(flow)
+                    self.on_event("approval", turn)
+            if kind == "out":
+                turn.stdout_buf += text
+            elif kind == "merged":
+                turn.merged_buf += text
+
+        def reader(channel) -> None:
+            while not stop_flag.is_set():
+                data = channel.read()
+                events.put((channel.kind, data))
+                if not data:
+                    return
+
+        for channel in term.channels:
+            threading.Thread(target=reader, args=(channel,), daemon=True).start()
+
+        open_kinds = {channel.kind for channel in term.channels}
         while True:
-            watched = []
-            if master_open:
-                watched.append(master)
-            if stdout_open:
-                watched.append(proc.stdout.fileno())
-            if not watched:
-                break
             try:
-                ready, _, _ = select.select(watched, [], [], 0.2)
-            except (OSError, ValueError):
-                break
-            for fd in ready:
-                if fd == master:
-                    try:
-                        chunk = os.read(master, 4096)
-                    except OSError:
-                        chunk = b""
-                    if chunk == b"":
-                        master_open = False
-                        continue
-                    text = chunk.decode("utf-8", "replace")
-                    err_text += text
-                    turn.raw_err = (turn.raw_err + strip_ansi(text))[-4000:]
-                    clean = strip_ansi(err_text)
-                    if turn.approval is None and OPEN_RE.search(clean[consumed:]):
-                        turn.approval = self._parse_approval(clean)
-                        turn.phase = "待审批"
-                        consumed = len(clean)
-                        self.on_event("approval", turn)
-                else:
-                    try:
-                        chunk = os.read(fd, 65536)
-                    except OSError:
-                        chunk = b""
-                    if chunk == b"":
-                        stdout_open = False
-                        continue
-                    turn.stdout_buf += chunk.decode("utf-8", "replace")
-            if proc.poll() is not None and not ready:
-                self._drain(turn)
-                break
-        turn.exit_code = proc.poll()
+                kind, chunk = events.get(timeout=0.2)
+            except queue.Empty:
+                if term.poll() is not None:
+                    break
+                continue
+            if not chunk:
+                open_kinds.discard(kind)
+                if not open_kinds and term.poll() is not None:
+                    break
+                continue
+            ingest(kind, chunk)
+
+        # 收尾：把进程退出瞬间还压在队列里的尾巴读掉，避免丢 JSON 回执
+        deadline = time.time() + 0.5
+        while time.time() < deadline:
+            try:
+                kind, chunk = events.get(timeout=0.05)
+            except queue.Empty:
+                if term.poll() is not None:
+                    break
+                continue
+            if chunk:
+                ingest(kind, chunk)
+
+        stop_flag.set()
+        turn.exit_code = term.poll()
         if not turn.finished:
             self._finalize(turn)
 
-    def _drain(self, turn: Turn) -> None:
-        master_open = True
-        stdout_open = True
-        for _ in range(64):
-            watched = []
-            if master_open:
-                watched.append(turn.master)
-            if stdout_open:
-                watched.append(turn.proc.stdout.fileno())
-            if not watched:
-                break
-            try:
-                ready, _, _ = select.select(watched, [], [], 0.05)
-            except (OSError, ValueError):
-                break
-            if not ready:
-                break
-            for fd in ready:
-                if fd == turn.master:
-                    try:
-                        chunk = os.read(turn.master, 4096)
-                    except OSError:
-                        chunk = b""
-                    if chunk == b"":
-                        master_open = False
-                    else:
-                        turn.raw_err = (turn.raw_err + strip_ansi(chunk.decode("utf-8", "replace")))[-4000:]
-                else:
-                    try:
-                        chunk = os.read(fd, 65536)
-                    except OSError:
-                        chunk = b""
-                    if chunk == b"":
-                        stdout_open = False
-                    else:
-                        turn.stdout_buf += chunk.decode("utf-8", "replace")
-
     def _finalize(self, turn: Turn) -> None:
         turn.finished = True
-        try:
-            os.close(turn.master)
-        except Exception:
-            pass
+        if turn.term is not None:
+            try:
+                turn.term.close()
+            except Exception:
+                pass
         payload = self._extract_json(turn.stdout_buf)
+        if payload is None and turn.merged_stream:
+            # ConPTY 只有一个合并流，回执和提示混在一起，只能从尾巴里抠 JSON
+            payload = self._extract_json(turn.merged_buf)
         if payload is not None:
             turn.result = payload
             turn.conversation_id = str(payload.get("conversationId") or turn.conversation_id or "")
@@ -392,6 +396,8 @@ class Runner:
         if not text.strip():
             return None
         text = strip_ansi(text).strip()
+        # 同上：折行会把 JSON 字符串里插进真实换行，JSON 就不合法了
+        text = _unwrap(text).strip()
         try:
             value = json.loads(text)
             if isinstance(value, dict):
@@ -485,11 +491,11 @@ class Runner:
 
     def approve(self, allowed: bool) -> bool:
         turn = self.turn
-        if not turn or turn.finished or turn.approval is None:
+        if not turn or turn.finished or turn.approval is None or turn.term is None:
             return False
-        try:
-            os.write(turn.master, b"y\n" if allowed else b"n\n")
-        except OSError:
+        # Windows 的 ConPTY 用 CRLF 交回车；POSIX 上多一个 \r 可能被当成两次回车
+        enter = b"\r\n" if term_io.IS_WIN else b"\n"
+        if not turn.term.write((b"y" if allowed else b"n") + enter):
             return False
         turn.approval = None
         turn.phase = "执行中"
@@ -497,10 +503,12 @@ class Runner:
 
     def stop(self) -> bool:
         turn = self.turn
-        if not turn or not turn.proc or turn.proc.poll() is not None:
+        if not turn or turn.finished or turn.term is None:
+            return False
+        if turn.term.poll() is not None:
             return False
         try:
-            turn.proc.terminate()
+            turn.term.terminate()
         except Exception:
             return False
         turn.phase = "已中止"
@@ -787,7 +795,7 @@ class Session:
             return {"ok": False, "error": "当前有任务在跑"}
         if not self.conversation_id:
             return {"ok": False, "error": "还没有会话 ID"}
-        argv = [self.config["bin"], "headless", "sessions", "wait", self.conversation_id]
+        argv = self.runner._bin_argv("headless", "sessions", "wait", self.conversation_id)
         if self.run_id:
             argv += ["--run", self.run_id]
         if self.config.get("profile"):

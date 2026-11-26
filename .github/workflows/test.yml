@@ -13,7 +13,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: 语法检查
-        run: python3 -m py_compile core.py server.py tools/make_icons.py tests/mock_doubao.py tests/test_api.py tests/test_argv.py android/app/src/main/python/gateway.py
+        run: python3 -m py_compile core.py server.py term_io.py tools/make_icons.py tests/mock_doubao.py tests/test_api.py tests/test_argv.py android/app/src/main/python/gateway.py
       - name: 安装脚本检查
         run: python3 tests/test_install.py
       - name: 界面静态检查

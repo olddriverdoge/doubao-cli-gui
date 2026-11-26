@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import queue
+import re
 import shutil
 import subprocess
 import sys
@@ -253,6 +254,7 @@ class Handler(BaseHTTPRequestHandler):
             str(payload.get("action") or ""),
             str(payload.get("id") or ""),
             str(payload.get("value") or ""),
+            list(config.get("binArgs") or []),
         )
         if error:
             return {"ok": False, "error": error}
@@ -272,7 +274,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def _base_argv(self, *args: str) -> list:
         config = self.session.config
-        argv = [config["bin"], "headless"] + list(args)
+        argv = [config["bin"]] + [str(item) for item in (config.get("binArgs") or [])] + ["headless"] + list(args)
         if config.get("profile"):
             argv += ["--profile", str(config["profile"])]
         return argv
@@ -356,17 +358,59 @@ class Handler(BaseHTTPRequestHandler):
         return {"ok": all(item["ok"] for item in checks), "checks": checks}
 
 
-def serve(host: str, port: int, open_url: bool) -> int:
+def _entry_from_cmd(path: str) -> str:
+    """从 npm 生成的 .cmd 里抠出真正的入口脚本。
+
+    npm 在 Windows 上生成的 `doubao.cmd` 形如：
+        "%_prog%"  "%dp0%\\node_modules\\@bytedance\\doubao-cli\\scripts\\run.cjs" %*
+    ConPTY 不能直接起 .cmd，所以把它拆成 `node.exe + 入口脚本`。
+    """
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read()
+    except OSError:
+        return ""
+    match = re.search(r'%dp0%\\([^"]+\.(?:cjs|mjs|js))', text)
+    if not match:
+        return ""
+    return os.path.join(os.path.dirname(os.path.abspath(path)), match.group(1).replace("/", os.sep))
+
+
+def resolve_bin(config: dict) -> tuple:
+    """把配置里的 bin 解成一个能直接 spawn 的 (bin, binArgs)。"""
+    configured = str(config.get("bin") or "doubao")
+    bin_args = [str(item) for item in (config.get("binArgs") or [])]
+    path = shutil.which(configured) or (configured if os.path.isfile(configured) else "")
+    if not path:
+        return "", [], ""
+    if os.name == "nt" and path.lower().endswith((".cmd", ".bat")) and not bin_args:
+        entry = _entry_from_cmd(path)
+        if entry and os.path.isfile(entry):
+            node = os.path.join(os.path.dirname(path), "node.exe")
+            if not os.path.isfile(node):
+                node = shutil.which("node") or ""
+            if node:
+                return node, [entry], ""
+    return path, bin_args, ""
+
+
+def serve(host: str, port: int, open_url: bool, bin_override: str = "", bin_args_override=None) -> int:
     config = core.load_config()
-    bin_path = shutil.which(str(config.get("bin") or "doubao"))
+    if bin_override:
+        config["bin"] = bin_override
+        config["binArgs"] = list(bin_args_override or [])
+    bin_path, bin_args, _ = resolve_bin(config)
     if not bin_path:
         sys.stderr.write(
-            "找不到 doubao 命令。先安装并登录社区版 CLI：\n"
-            "  npm i -g doubao-cli@0.23.3\n"
-            "  doubao headless login --profile termux\n"
+            "找不到 doubao 命令。先安装并登录 CLI：\n"
+            "  社区版（Termux / Linux / macOS）：npm i -g doubao-cli@0.23.3\n"
+            "  官方版（Windows / macOS / Linux）：npm i -g @bytedance/doubao-cli\n"
+            "然后 doubao headless login --profile termux\n"
+            "也可以显式指定：--bin <node.exe> --bin-arg <cli入口脚本>\n"
         )
         return 2
     config["bin"] = bin_path
+    config["binArgs"] = bin_args
 
     broker = Broker()
     session = core.Session(config, broker.publish)
@@ -411,8 +455,10 @@ def main(argv: list) -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--open", action="store_true", help="启动后用浏览器打开")
+    parser.add_argument("--bin", default="", help="CLI 可执行文件路径（默认读配置里的 bin）")
+    parser.add_argument("--bin-arg", action="append", default=[], help="bin 前面的固定参数，可重复，例如入口脚本")
     args = parser.parse_args(argv)
-    return serve(args.host, args.port, args.open)
+    return serve(args.host, args.port, args.open, args.bin, args.bin_arg)
 
 
 if __name__ == "__main__":

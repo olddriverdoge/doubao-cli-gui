@@ -116,6 +116,11 @@ class Harness:
         os.makedirs(os.path.dirname(binary), exist_ok=True)
         shutil.copy(MOCK, binary)
         os.chmod(binary, 0o755)
+        extra = {}
+        if os.name == "nt":
+            # Windows 不能直接执行无扩展名的 .py，用「解释器 + 脚本」的形式喂进去
+            extra = {"binArgs": [binary]}
+            binary = sys.executable
         with open(os.path.join(config_dir, "config.json"), "w", encoding="utf-8") as handle:
             json.dump(
                 {
@@ -125,6 +130,7 @@ class Harness:
                     "mode": "work",
                     "permission": "ask_risky",
                     "timeout": 60,
+                    **extra,
                 },
                 handle,
             )

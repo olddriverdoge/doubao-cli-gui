@@ -1,6 +1,6 @@
 # doubao-cli-gui
 
-社区版 `doubao-cli` 的手机图形界面：本地起一个 HTTP 服务，浏览器打开就能像官方客户端一样收发消息、逐条审批工具调用。零第三方依赖（Python 标准库 + HTML/CSS/JS），专为 Termux + Android 调优。
+社区版 `doubao-cli` 的图形界面：本地起一个 HTTP 服务，浏览器打开就能像官方客户端一样收发消息、逐条审批工具调用。除 Windows 上的 ConPTY 依赖（`pywinpty`）外零第三方依赖（Python 标准库 + HTML/CSS/JS）；Termux/Android 与 Windows 桌面共用同一套代码。
 
 ## 它是什么
 
@@ -13,7 +13,7 @@
 server.py ── 会话状态、事件广播、静态页面
    │  fork
    ▼
-doubao headless sessions create|send|wait …（stdin/stderr 接 pty）
+doubao headless sessions create|send|wait …（stdin/stderr 接伪终端：POSIX 用 pty，Windows 用 ConPTY）
    │
    ▼
 豆包服务端
@@ -54,6 +54,43 @@ doubao headless login --profile termux
 
 `install.sh` 做这些事：缺 python/node 就 `pkg install`、缺 CLI 就 `npm i -g`、把代码铺到 `~/doubao-cli-gui`、在 `$PREFIX/bin` 放 `doubao-gui`、在 `~/.shortcuts/` 生成 `豆包CLI.sh`、最后自检起停一次。
 
+## 在 Windows 桌面跑
+
+桌面端和手机跑同一套 `server.py` + `web/`，只有进程层换实现：POSIX 用标准库 `pty`，Windows 用 ConPTY（`pywinpty`）。这层差异收敛在 `term_io.py`，上层只认 `write / read / poll / terminate` 四个动作，UI 层纯 HTTP + SSE，所以将来塞进 WebView 也不用改前端。
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\pip install pywinpty
+
+# 社区版 CLI（官方 @bytedance/doubao-cli 没有 headless 子命令，契约对不上）
+npm i --prefix D:\PYPJ\tools\dcl doubao-cli@0.23.3
+
+.\.venv\Scripts\python.exe server.py --port 8766 `
+  --bin "D:\PYPJ\tools\node\node.exe" `
+  --bin-arg "D:\PYPJ\tools\dcl\node_modules\doubao-cli\bin\doubao.mjs"
+```
+
+浏览器打开 `http://127.0.0.1:8766`。登录仍然要扫码：`doubao headless login --profile <profile>`。
+
+三个 Windows 专属细节：
+
+- npm 生成的 `doubao.cmd` 不能直接当进程启动（ConPTY 只认真实可执行文件），`server.py` 会自动把它拆成 `node.exe + 入口脚本`；也可以显式用 `--bin / --bin-arg`。
+- ConPTY 只有一个合并流，stdout 不单独走管道，所以 `--json` 回执从合并流里提取（`_finalize` 在 `stdout_buf` 取不到时回退到 `merged_buf`）。
+- 终端按列宽硬折行，会把 `...? [y/N]`、甚至 `[y/N]` 本身拆开。`core.py` 匹配前先做折行还原（`_unwrap`），并把 ConPTY 宽度开到 200 列。
+
+测试在 Windows 上同样跑：
+
+```powershell
+.\.venv\Scripts\python.exe tests\test_argv.py
+.\.venv\Scripts\python.exe tests\test_api.py
+.\.venv\Scripts\python.exe tests\test_ui.py
+# 网关测试要先按 CI 复制页面
+Copy-Item web android\app\src\main\python\web -Recurse
+.\.venv\Scripts\python.exe tests\test_gateway.py
+```
+
+`tests/test_install.py` 需要 bash（Git Bash / WSL），Windows 裸机跳过。
+
 ## 使用
 
 ```bash
@@ -88,7 +125,7 @@ DOUBAO_GUI_PORT=8766 doubao-gui start   # 换端口
 ## 常见问题
 
 **审批一直不弹 / 一发送就失败**
-社区 CLI 用 `Boolean(process.stdin.isTTY && process.stderr.isTTY)` 判断要不要走交互审批；非 TTY 会**静默拒绝**所有审批。本项目已经把 stdin/stderr 接到 pty 解决，改代码时别把这两个接到管道。
+社区 CLI 用 `Boolean(process.stdin.isTTY && process.stderr.isTTY)` 判断要不要走交互审批；非 TTY 会**静默拒绝**所有审批。本项目已经把 stdin/stderr 接到伪终端解决（POSIX 是 pty，Windows 是 ConPTY），改代码时别把这两个接到管道。
 
 **出现 `terminated`**
 那是 Node 的 undici 在 SSE 断连时抛的，**不等于服务端取消了任务**。点「续等」，不要重发同一条消息，否则会多起一轮。
