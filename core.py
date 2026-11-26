@@ -29,7 +29,7 @@ from typing import Callable, Dict, List, Optional
 
 import term_io
 
-VERSION = "0.1.11"
+VERSION = "0.1.12"
 
 CONFIG_DIR = os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "doubao-cli-gui"
@@ -54,6 +54,16 @@ DEFAULT_CONFIG = {
     # 默认不自动放行任何审批：GUI 负责把每个审批交给用户确认，
     # 想省事就用审批卡上的“本轮都允许”。
     "auto_approve": [],
+    # 0.1.12：请求级选项，只作用于本轮消息，不改 CLI 的默认
+    "skills": True,
+    "enterprise": False,
+    "project": "",
+    "mcp": [],
+    "expect_json": False,
+    "reply_schema": "",
+    "attach": [],
+    # 0.1.12：过程面板
+    "show_trace": True,
 }
 
 PERM_TO_CLI = {
@@ -66,7 +76,7 @@ PERM_TO_CLI = {
 }
 REASONING_LEVELS = ("low", "medium", "high", "xhigh", "max")
 
-SESSION_MUTATIONS = ("rename", "pin", "unpin", "archive", "unarchive")
+SESSION_MUTATIONS = ("rename", "pin", "unpin", "archive", "unarchive", "move")
 SESSION_ID_RE = re.compile(r"^[1-9]\d{11,23}$")
 
 PERM_LABELS = {
@@ -129,6 +139,11 @@ def build_session_action(
             return None, "标题不能为空"
         if len(value) > 20:
             return None, "标题最多 20 个字"
+    elif action == "move":
+        if not value:
+            return None, "要指定项目 ID / 名称，或输入 none 清空"
+        if len(value) > 64:
+            return None, "项目名太长"
     elif value:
         return None, "该操作不接受额外参数"
     argv = [bin_name] + [str(item) for item in (bin_args or [])] + ["headless", "sessions", action, conversation_id]
@@ -235,10 +250,44 @@ class Runner:
     def _wait_flags(self) -> List[str]:
         return ["--wait", "--timeout", str(int(self.config.get("timeout") or 600)), "--json"]
 
+    def _request_flags(self) -> List[str]:
+        """本轮请求级选项：附件、项目、企业知识、技能开关、MCP、结构化回复。
+
+        这些只对该条消息生效，不写进 CLI 的默认配置。
+        """
+        config = self.config
+        flags: List[str] = []
+        for path in config.get("attach") or []:
+            path = str(path or "").strip()
+            if path:
+                flags += ["--attach", path]
+        if str(config.get("mode") or "work") == "chat":
+            # chat 走云端：项目 / 企业知识 / 技能 / MCP / 权限这些一律不能带，
+            # CLI 会直接报 “requires --mode work”。附件例外，它跟模式无关。
+            return flags
+        project = str(config.get("project") or "").strip()
+        if project:
+            flags += ["--project", project]
+        if config.get("enterprise"):
+            flags.append("--enterprise-knowledge")
+        for connector in config.get("mcp") or []:
+            connector = str(connector or "").strip()
+            if connector:
+                flags += ["--mcp", connector]
+        if config.get("skills") is False:
+            flags.append("--no-skills")
+        if config.get("expect_json"):
+            flags.append("--expect-json")
+            schema = str(config.get("reply_schema") or "").strip()
+            if schema:
+                flags += ["--reply-schema", schema]
+        return flags
+
     def build_create(self, message: str) -> List[str]:
         argv = self._bin_argv("headless", "sessions", "create")
         argv += ["--mode", str(self.config.get("mode") or "work")]
         argv += self._local_flags()
+        argv += self._request_flags()
         argv += self._model_flags()
         argv += self._profile_flags()
         argv += self._wait_flags()
@@ -250,6 +299,7 @@ class Runner:
     def build_send(self, conversation_id: str, message: str) -> List[str]:
         argv = self._bin_argv("headless", "sessions", "send", conversation_id)
         argv += self._local_flags()
+        argv += self._request_flags()
         argv += self._model_flags()
         argv += self._profile_flags()
         argv += self._wait_flags()
@@ -530,6 +580,125 @@ def now_ms() -> int:
     return int(time.time() * 1000)
 
 
+TRACE_INTERVAL = 1.2
+ROLE_MAP = {"user": "user", "assistant": "assistant", "bot": "assistant", "system": "system"}
+
+
+def _as_text(value) -> str:
+    """receipt 里的 thinking / answer 可能是字符串，也可能是块数组。"""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = []
+        for item in value:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                parts.append(str(item.get("text") or item.get("content") or ""))
+        return "".join(parts)
+    if isinstance(value, dict):
+        return str(value.get("text") or value.get("content") or "")
+    return ""
+
+
+def cli_turns_dir() -> str:
+    """CLI 的 receipt 目录：默认 ~/.config/doubao-cli/turns，可用环境变量覆盖。"""
+    root = os.environ.get("DOUBAO_CLI_CONFIG_DIR") or os.path.join(
+        os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "doubao-cli"
+    )
+    return os.path.join(root, "turns")
+
+
+def latest_receipt(conversation_id: str) -> Optional[dict]:
+    """同一会话同一时间只有一个 run，取 mtime 最新的那份 receipt。"""
+    if not conversation_id:
+        return None
+    paths = glob.glob(os.path.join(cli_turns_dir(), "*", "%s-*.json" % conversation_id))
+    if not paths:
+        return None
+    try:
+        path = max(paths, key=lambda item: os.path.getmtime(item))
+    except OSError:
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    data["_path"] = path
+    return data
+
+
+def parse_receipt(data: dict) -> dict:
+    steps = []
+    for item in data.get("handoffs") or []:
+        if not isinstance(item, dict):
+            continue
+        steps.append(
+            {
+                "id": str(item.get("taskId") or ""),
+                "scene": item.get("appendScene"),
+                "completed": bool(item.get("completed")),
+            }
+        )
+    return {
+        "conversationId": str(data.get("conversationId") or ""),
+        "runId": str(data.get("runId") or ""),
+        "thinking": _as_text(data.get("thinking")),
+        "answer": _as_text(data.get("answer")),
+        "steps": steps[-12:],
+        "completed": bool(data.get("completed")),
+        "at": now_ms(),
+    }
+
+
+def read_conversation(config: dict, conversation_id: str, limit: int = 60) -> Optional[list]:
+    """用 CLI 的 sessions read 回读服务端历史，GUI 不再只有本地那点记录。"""
+    if not conversation_id:
+        return None
+    argv = [str(config["bin"])] + [str(item) for item in (config.get("binArgs") or [])]
+    argv += ["headless", "sessions", "read", conversation_id, "--limit", str(int(limit)), "--json"]
+    if config.get("profile"):
+        argv += ["--profile", str(config["profile"])]
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=40)
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        data = json.loads((result.stdout or "").strip() or "{}")
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    rows = data.get("messages")
+    if not isinstance(rows, list):
+        inner = data.get("result")
+        rows = inner.get("messages") if isinstance(inner, dict) else None
+    if not isinstance(rows, list):
+        return None
+    messages = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        text = str(row.get("text") or row.get("content") or "").strip()
+        if not text:
+            continue
+        role = ROLE_MAP.get(str(row.get("role") or "").lower(), "assistant")
+        messages.append(
+            {
+                "id": str(row.get("messageId") or row.get("id") or uuid.uuid4().hex[:12]),
+                "role": role,
+                "text": text,
+                "ts": 0,
+            }
+        )
+    return messages
+
+
 AUTO_RESUME_LIMIT = 3
 AUTO_RESUME_DELAY = 2.0
 
@@ -600,8 +769,11 @@ class Session:
         self.pending: Optional[dict] = None
         self.stalled = False
         self.auto_resume = 0
+        self.trace: Optional[dict] = None
+        self._trace_key = ""
         self._load_history()
         threading.Thread(target=self._ticker, daemon=True).start()
+        threading.Thread(target=self._trace_ticker, daemon=True).start()
 
     # -- 持久化
 
@@ -647,6 +819,7 @@ class Session:
             "approval": self.approval,
             "pending": self.pending,
             "stalled": self.stalled,
+            "trace": self.trace,
             "messages": self.messages,
             "version": VERSION,
             "config": {
@@ -659,7 +832,15 @@ class Session:
                 "permissionLabel": PERM_LABELS.get(self.config.get("permission"), ""),
                 "mode": self.config.get("mode"),
                 "profile": self.config.get("profile"),
-                "bin": self.config.get("bin"),
+                "timeout": int(self.config.get("timeout") or 600),
+                "skills": self.config.get("skills", True),
+                "enterprise": bool(self.config.get("enterprise")),
+                "project": self.config.get("project") or "",
+                "mcp": list(self.config.get("mcp") or []),
+                "expectJson": bool(self.config.get("expect_json")),
+                "replySchema": self.config.get("reply_schema") or "",
+                "attach": list(self.config.get("attach") or []),
+                "showTrace": self.config.get("show_trace", True),
             },
             "permissions": PERM_LABELS,
         }
@@ -701,6 +882,8 @@ class Session:
         self.pending = None
         self.stalled = False
         self.auto_resume = 0
+        self.trace = None
+        self._trace_key = ""
         self._add_message("user", text)
         self.status = "running"
         self.phase = "提交中"
@@ -727,6 +910,10 @@ class Session:
             self.emit(self._status_event())
             return {"ok": False, "error": str(exc)}
         turn = self.runner.start(argv, label)
+        if self.config.get("attach"):
+            # 附件只作用于这一条消息，发完就清掉，避免下一轮又偷偷带上
+            self.config["attach"] = []
+            save_config(self.config)
         if turn is None:
             self.status = "idle"
             self.phase = "空闲"
@@ -755,9 +942,32 @@ class Session:
         return {"ok": True}
 
     def stop(self) -> dict:
+        """先让服务端把这一轮标记为停止，再收掉本地执行器。
+
+        只 terminate 本地进程的话，界面上写着“已中止”，服务端那一轮可能还在跑。
+        """
+        server_note = ""
+        if self.conversation_id:
+            argv = self.runner._bin_argv("headless", "sessions", "stop", self.conversation_id)
+            if self.run_id:
+                argv += ["--run", self.run_id]
+            argv += ["--json"]
+            try:
+                result = subprocess.run(argv, capture_output=True, text=True, timeout=20)
+                if result.returncode == 0:
+                    server_note = "服务端已标记停止"
+            except Exception:
+                server_note = ""
         if not self.runner.stop():
+            if server_note:
+                self.status = "done"
+                self.phase = "已中止"
+                self._notice(server_note)
+                self.emit(self._status_event())
+                return {"ok": True}
             return {"ok": False, "error": "没有正在运行的任务"}
-        self._notice("已请求中止当前轮")
+        self.stalled = False
+        self._notice(server_note or "已请求中止当前轮")
         return {"ok": True}
 
     def switch(self, conversation_id: str) -> dict:
@@ -774,6 +984,8 @@ class Session:
         self.config["last_conversation"] = conversation_id
         save_config(self.config)
         self._load_history()
+        self._sync_history()
+        self._cli_open(conversation_id)
         self.emit({"type": "snapshot", "data": self.snapshot()})
         return {"ok": True}
 
@@ -943,6 +1155,53 @@ class Session:
             time.sleep(1)
             if self.started_at:
                 self.emit({"type": "tick", "data": {"elapsed": int(time.time() - self.started_at)}})
+
+    def _cli_open(self, conversation_id: str) -> None:
+        """让 CLI 的“当前会话”也跟着切，否则 CLI 侧和 GUI 侧会各说各话。"""
+        try:
+            argv = self.runner._bin_argv("headless", "sessions", "open", conversation_id)
+            if self.config.get("profile"):
+                argv += ["--profile", str(self.config["profile"])]
+            argv += ["--json"]
+            subprocess.run(argv, capture_output=True, text=True, timeout=15)
+        except Exception:
+            pass
+
+    def _sync_history(self) -> None:
+        """切到别的会话时，用服务端历史覆盖本地那份（本地只记 GUI 自己发过的）。"""
+        if not self.conversation_id:
+            return
+        remote = read_conversation(self.config, self.conversation_id)
+        if not remote:
+            return
+        self.messages = remote[-120:]
+        self._save_history()
+
+    def _trace_ticker(self) -> None:
+        """轮询 CLI 的 receipt：里面的 thinking / handoffs 就是 agent 的思考与步骤。
+
+        CLI 的终端只在审批时输出文字，思考流不进 stderr，但会随 checkpoint
+        写进 receipt，所以这里按会话 ID 找最新的那份回执来喂过程面板。
+        """
+        while True:
+            time.sleep(TRACE_INTERVAL)
+            try:
+                if self.status not in ("running", "approval", "input", "stalled"):
+                    continue
+                if not self.conversation_id:
+                    continue
+                data = latest_receipt(self.conversation_id)
+                if not data:
+                    continue
+                trace = parse_receipt(data)
+                key = "%d|%d|%s" % (len(trace["thinking"]), len(trace["steps"]), trace["completed"])
+                if key == self._trace_key:
+                    continue
+                self._trace_key = key
+                self.trace = trace
+                self.emit({"type": "trace", "data": trace})
+            except Exception:
+                continue
 
     # -- 续等
 

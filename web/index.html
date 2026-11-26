@@ -50,6 +50,7 @@
       </div>
       <div id="pd-body" class="approval-op"></div>
       <div class="approval-actions">
+        <button id="pd-open" class="btn ghost">去网页确认</button>
         <button id="pd-resume" class="btn soft">答完了 · 续等</button>
       </div>
     </div>
@@ -68,6 +69,20 @@
       </div>
     </div>
 
+    <section id="trace" class="trace" hidden>
+      <button id="trace-toggle" class="trace-head" type="button">
+        <span class="trace-tag">过程</span>
+        <span id="trace-line" class="trace-line"></span>
+        <span id="trace-caret" class="trace-caret">▾</span>
+      </button>
+      <div id="trace-body" class="trace-body" hidden>
+        <div class="trace-label">思考</div>
+        <pre id="trace-think" class="trace-think"></pre>
+        <div class="trace-label">步骤</div>
+        <div id="trace-steps" class="trace-steps"></div>
+      </div>
+    </section>
+
     <div class="quick">
       <button class="chip" data-act="new">＋ 新会话</button>
       <button class="chip" data-act="resume">⟳ 续等</button>
@@ -77,6 +92,7 @@
     </div>
 
     <div class="composer">
+      <button id="attach" class="btn ghost clip" type="button" aria-label="本轮附件">＋</button>
       <textarea id="input" rows="1" placeholder="给豆包发消息…" enterkeyhint="enter"></textarea>
       <button id="stop" class="btn danger" hidden>中止</button>
       <button id="send" class="btn primary send">发送</button>

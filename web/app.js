@@ -28,8 +28,20 @@
   const sheetTitle = document.getElementById("sheet-title");
   const sheetBody = document.getElementById("sheet-body");
   const toastEl = document.getElementById("toast");
+  const traceBox = document.getElementById("trace");
+  const traceToggle = document.getElementById("trace-toggle");
+  const traceLine = document.getElementById("trace-line");
+  const traceBody = document.getElementById("trace-body");
+  const traceThink = document.getElementById("trace-think");
+  const traceSteps = document.getElementById("trace-steps");
+  const traceCaret = document.getElementById("trace-caret");
+  const attachBtn = document.getElementById("attach");
+  const pdOpenBtn = document.getElementById("pd-open");
 
-  const state = { status: "idle", phase: "空闲", approval: null, pending: null, stalled: false, cid: "", rendered: new Set(), offline: false, appVersion: "" };
+  let traceOpen = false;
+  try { traceOpen = localStorage.getItem("traceOpen") === "1"; } catch (error) { traceOpen = false; }
+
+  const state = { status: "idle", phase: "空闲", approval: null, pending: null, stalled: false, trace: null, cid: "", rendered: new Set(), offline: false, appVersion: "", attach: [] };
   let nativeMode = false;
   let toastTimer = 0;
 
@@ -146,6 +158,7 @@
     state.approval = data.approval || null;
     state.pending = data.pending || null;
     state.stalled = !!data.stalled;
+    if (data.trace !== undefined) state.trace = data.trace || null;
     if (data.conversationId !== undefined) {
       state.cid = data.conversationId || "";
       cidEl.textContent = state.cid ? "会话 " + state.cid.slice(-6) : "无会话";
@@ -160,6 +173,7 @@
     stopBtn.hidden = !busy;
     renderApproval();
     renderPending();
+    renderTrace(true);
     syncOffline();
   }
 
@@ -205,6 +219,54 @@
     pdBody.innerHTML = rows.join("");
   }
 
+  function traceSummary(trace) {
+    if (!trace) return "";
+    const parts = [];
+    if (trace.thinking) parts.push("思考 " + trace.thinking.length + " 字");
+    const steps = trace.steps || [];
+    if (steps.length) {
+      const done = steps.filter((step) => step.completed).length;
+      parts.push("步骤 " + done + "/" + steps.length);
+    }
+    if (trace.completed) parts.push("已完成");
+    return parts.join(" · ");
+  }
+
+  function renderTrace(forceScroll) {
+    const trace = state.trace;
+    const steps = (trace && trace.steps) || [];
+    const visible = !!trace && (state.status !== "idle" || !!trace.thinking || steps.length > 0);
+    if (!visible) {
+      traceBox.hidden = true;
+      return;
+    }
+    traceBox.hidden = false;
+    traceLine.textContent = traceSummary(trace) || state.phase || "执行中";
+    traceCaret.textContent = traceOpen ? "▴" : "▾";
+    traceBody.hidden = !traceOpen;
+
+    const thinking = (trace.thinking || "").trim();
+    const shown = thinking || "（这一步没有输出思考文本）";
+    if (traceThink.textContent !== shown) {
+      const atBottom = traceThink.scrollHeight - traceThink.scrollTop - traceThink.clientHeight < 24;
+      traceThink.textContent = shown;
+      if (atBottom || forceScroll) traceThink.scrollTop = traceThink.scrollHeight;
+    }
+
+    const rows = steps.map((step) => {
+      const mark = step.completed ? '<span class="on">✓</span>' : '<span class="off">•</span>';
+      const label = "task " + (step.id ? step.id.slice(-6) : "?") + (step.scene ? " · " + step.scene : "");
+      return '<div class="trace-step">' + mark + escapeHtml(label) + "</div>";
+    });
+    traceSteps.innerHTML = rows.join("") || '<div class="trace-step"><span class="off">•</span>还在准备</div>';
+  }
+
+  traceToggle.addEventListener("click", () => {
+    traceOpen = !traceOpen;
+    try { localStorage.setItem("traceOpen", traceOpen ? "1" : "0"); } catch (error) { /* 忽略 */ }
+    renderTrace(false);
+  });
+
   // ------------------------------------------------------------ SSE
 
   function connect() {
@@ -223,6 +285,9 @@
         addMessage(payload.data, true);
       } else if (payload.type === "status") {
         applyStatus(payload.data || {});
+      } else if (payload.type === "trace") {
+        state.trace = payload.data || null;
+        renderTrace(true);
       } else if (payload.type === "tick") {
         const seconds = Number(payload.data && payload.data.elapsed) || 0;
         timerEl.textContent = seconds ? Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0") : "";
@@ -250,6 +315,11 @@
     autosize();
     const result = await post("/api/send", { text });
     if (!result.ok && result.error) input.value = text;
+    else if (state.attach.length) {
+      state.attach = [];
+      attachBtn.textContent = "＋";
+      attachBtn.classList.remove("has");
+    }
   }
 
   sendBtn.addEventListener("click", submit);
@@ -266,6 +336,50 @@
   apOnce.addEventListener("click", () => post("/api/approve", { allow: true, scope: "once" }));
   apTurn.addEventListener("click", () => post("/api/approve", { allow: true, scope: "turn" }));
   apDeny.addEventListener("click", () => post("/api/approve", { allow: false, scope: "once" }));
+  let attachPaths = [];
+  function openAttach() {
+    openSheet("本轮附件", (body) => {
+      const hint = document.createElement("div");
+      hint.className = "hint";
+      hint.textContent = "每行一个绝对路径（Termux 里是 /data/data/com.termux/files/home/…）。只作用于下一条消息，发完自动清空。";
+      body.appendChild(hint);
+      const area = document.createElement("textarea");
+      area.rows = 4;
+      area.value = (state.attach.length ? state.attach : []).join("\n");
+      area.placeholder = "/data/data/com.termux/files/home/report.pdf";
+      body.appendChild(field("附件路径", area));
+      const row = document.createElement("div");
+      row.className = "row";
+      row.appendChild(button("保存", "primary", async () => {
+        attachPaths = area.value.split("\n").map((item) => item.trim()).filter(Boolean);
+        const result = await post("/api/config", { attach: attachPaths });
+        if (!result.ok) return;
+        state.attach = attachPaths;
+        attachBtn.textContent = attachPaths.length ? "＋" + attachPaths.length : "＋";
+        attachBtn.classList.toggle("has", attachPaths.length > 0);
+        closeSheet();
+        toast(attachPaths.length ? "已挂 " + attachPaths.length + " 个附件" : "已清空附件");
+      }));
+      row.appendChild(button("清空", "ghost", async () => {
+        attachPaths = [];
+        const result = await post("/api/config", { attach: [] });
+        if (!result.ok) return;
+        state.attach = [];
+        attachBtn.textContent = "＋";
+        attachBtn.classList.remove("has");
+        closeSheet();
+        toast("已清空附件");
+      }));
+      body.appendChild(row);
+    });
+  }
+  attachBtn.addEventListener("click", openAttach);
+
+  pdOpenBtn.addEventListener("click", () => {
+    if (!state.cid) { toast("还没有会话 ID"); return; }
+    window.open("https://www.doubao.com/chat/" + state.cid, "_blank", "noopener");
+  });
+
   pdResume.addEventListener("click", () => {
     post("/api/resume").then((result) => {
       if (result && result.ok) toast("已接管这一轮（不重发）");
@@ -344,6 +458,15 @@
     profile.placeholder = "profile 名称，留空用默认";
     const profileField = field("登录 profile（可留空）", profile);
 
+    const cookie = document.createElement("input");
+    cookie.type = "text";
+    cookie.placeholder = "Cookie 文件绝对路径（新设备扫码会撞 MFA，建议走这条）";
+    const cookieField = field("Cookie 文件", cookie);
+    const cookieRow = document.createElement("div");
+    cookieRow.className = "row";
+    const cookieBtn = button("用 Cookie 登录", "soft", () => loginCookie());
+    cookieRow.appendChild(cookieBtn);
+
     const primaryRow = document.createElement("div");
     primaryRow.className = "row";
     const startBtn = button("扫码登录", "primary", () => startLogin());
@@ -364,6 +487,8 @@
     wrap.appendChild(qr);
     wrap.appendChild(qrTip);
     if (!readProfile) wrap.appendChild(profileField);
+    wrap.appendChild(cookieField);
+    wrap.appendChild(cookieRow);
     wrap.appendChild(primaryRow);
     wrap.appendChild(secondRow);
     body.appendChild(wrap);
@@ -472,6 +597,20 @@
       else if (result && result.ok === false) toast(result.error || "申请二维码失败");
     }
 
+    async function loginCookie() {
+      const path = cookie.value.trim();
+      if (!path) { toast("先填 Cookie 文件路径"); return; }
+      cookieBtn.disabled = true;
+      cookieBtn.textContent = "登录中…";
+      const name = (readProfile ? readProfile() : profile.value).trim();
+      const result = await post("/api/login/cookie", { path: path, profile: name });
+      cookieBtn.disabled = false;
+      cookieBtn.textContent = "用 Cookie 登录";
+      render(result);
+      if (result && result.ok) toast("已登录");
+      else toast((result && result.error) || "Cookie 登录失败");
+    }
+
     async function cancelLogin() {
       clearTimeout(loginPoll);
       cancelBtn.disabled = true;
@@ -554,6 +693,67 @@
       });
       body.appendChild(field("推理档位 --reasoning", reasoning));
 
+      const timeout = document.createElement("input");
+      timeout.type = "number";
+      timeout.min = "30";
+      timeout.max = "3600";
+      timeout.value = String(config.timeout || 600);
+      body.appendChild(field("等待超时（秒）", timeout));
+
+      const skills = document.createElement("input");
+      skills.type = "checkbox";
+      skills.checked = config.skills !== false;
+      const skillsLabel = document.createElement("label");
+      skillsLabel.className = "hint";
+      skillsLabel.appendChild(skills);
+      skillsLabel.appendChild(document.createTextNode(" 启用默认技能（关掉 = --no-skills）"));
+      body.appendChild(skillsLabel);
+
+      const enterprise = document.createElement("input");
+      enterprise.type = "checkbox";
+      enterprise.checked = !!config.enterprise;
+      const entLabel = document.createElement("label");
+      entLabel.className = "hint";
+      entLabel.appendChild(enterprise);
+      entLabel.appendChild(document.createTextNode(" 带上企业知识（仅 work 模式）"));
+      body.appendChild(entLabel);
+
+      const project = document.createElement("input");
+      project.type = "text";
+      project.value = config.project || "";
+      project.placeholder = "项目 ID / 名称，留空不绑";
+      body.appendChild(field("项目 --project", project));
+
+      const mcp = document.createElement("input");
+      mcp.type = "text";
+      mcp.value = (config.mcp || []).join(",");
+      mcp.placeholder = "connector id，逗号分隔";
+      body.appendChild(field("MCP --mcp", mcp));
+
+      const expectJson = document.createElement("input");
+      expectJson.type = "checkbox";
+      expectJson.checked = !!config.expectJson;
+      const ejLabel = document.createElement("label");
+      ejLabel.className = "hint";
+      ejLabel.appendChild(expectJson);
+      ejLabel.appendChild(document.createTextNode(" 要求 JSON 回复（--expect-json）"));
+      body.appendChild(ejLabel);
+
+      const schema = document.createElement("input");
+      schema.type = "text";
+      schema.value = config.replySchema || "";
+      schema.placeholder = "JSON schema 文件路径（可选）";
+      body.appendChild(field("回复 schema", schema));
+
+      const showTrace = document.createElement("input");
+      showTrace.type = "checkbox";
+      showTrace.checked = config.showTrace !== false;
+      const stLabel = document.createElement("label");
+      stLabel.className = "hint";
+      stLabel.appendChild(showTrace);
+      stLabel.appendChild(document.createTextNode(" 显示过程面板"));
+      body.appendChild(stLabel);
+
       const profile = document.createElement("input");
       profile.type = "text";
       profile.value = config.profile || "";
@@ -576,6 +776,14 @@
           profile: profile.value,
           model: model.value,
           reasoning: reasoning.value,
+          timeout: Number(timeout.value) || 600,
+          skills: skills.checked,
+          enterprise: enterprise.checked,
+          project: project.value,
+          mcp: mcp.value.split(",").map((item) => item.trim()).filter(Boolean),
+          expect_json: expectJson.checked,
+          reply_schema: schema.value,
+          show_trace: showTrace.checked,
         });
         if (result.ok) { closeSheet(); toast("已保存"); }
       }));
@@ -719,21 +927,41 @@
 
   async function openSessions() {
     openSheet("会话", (body) => {
-      const loading = document.createElement("div");
-      loading.className = "hint";
-      loading.textContent = "读取中…";
-      body.appendChild(loading);
+      let limit = 20;
+      let archived = false;
+
+      const bar = document.createElement("div");
+      bar.className = "row";
+      const limitSel = document.createElement("select");
+      [10, 20, 50, 100].forEach((value) => {
+        const option = new Option(value + " 条", String(value));
+        if (value === limit) option.selected = true;
+        limitSel.appendChild(option);
+      });
+      const archLabel = document.createElement("label");
+      archLabel.className = "hint";
+      const archBox = document.createElement("input");
+      archBox.type = "checkbox";
+      archLabel.appendChild(archBox);
+      archLabel.appendChild(document.createTextNode(" 看归档"));
+      bar.appendChild(limitSel);
+      bar.appendChild(archLabel);
+      body.appendChild(bar);
+
+      const list = document.createElement("div");
+      body.appendChild(list);
+
       body.appendChild(button("＋ 开新会话", "primary", async () => {
         const result = await post("/api/new");
         if (result.ok) { closeSheet(); toast("已开新会话"); }
       }));
-      getJson("/api/sessions").then((result) => {
-        loading.remove();
+
+      async function load() {
+        list.innerHTML = '<div class="hint">读取中…</div>';
+        const result = await getJson("/api/sessions?limit=" + limit + (archived ? "&archived=1" : ""));
+        list.innerHTML = "";
         if (!result.ok) {
-          const failed = document.createElement("div");
-          failed.className = "hint";
-          failed.textContent = result.error || "读取失败";
-          body.appendChild(failed);
+          list.innerHTML = '<div class="hint">' + escapeHtml(result.error || "读取失败") + "</div>";
           return;
         }
         (result.sessions || []).forEach((row) => {
@@ -744,7 +972,7 @@
             const switched = await post("/api/switch", { id: row.id });
             if (switched.ok) { closeSheet(); toast("已切换"); }
           });
-          body.appendChild(node);
+          list.appendChild(node);
 
           const tools = document.createElement("div");
           tools.className = "sess-tools";
@@ -752,24 +980,36 @@
             const result = await post("/api/session/action", { action: action, id: row.id, value: value || "" });
             if (!result.ok) return toast(result.error || "操作失败");
             toast(done);
+            load();
           };
           tools.appendChild(button(row.pinned ? "取消置顶" : "置顶", "mini", () => act(row.pinned ? "unpin" : "pin", "", "已更新")));
-          
           tools.appendChild(button("重命名", "mini", () => {
             const title = prompt("新的标题（最多 20 字）", row.title);
             if (!title) return;
             act("rename", title.trim(), "已重命名");
           }));
           tools.appendChild(button(row.archived ? "取消归档" : "归档", "mini", () => act(row.archived ? "unarchive" : "archive", "", "已更新")));
-          body.appendChild(tools);
+          tools.appendChild(button("移动", "mini", () => {
+            const target = prompt("移到哪个项目？（项目 ID 或名称，输入 none 清空）", "");
+            if (!target) return;
+            act("move", target.trim(), "已移动");
+          }));
+          list.appendChild(tools);
         });
         if (!(result.sessions || []).length) {
-          const empty = document.createElement("div");
-          empty.className = "hint";
-          empty.textContent = "还没有历史会话。";
-          body.appendChild(empty);
+          list.innerHTML = '<div class="hint">没有会话。</div>';
         }
+      }
+
+      limitSel.addEventListener("change", () => {
+        limit = Number(limitSel.value) || 20;
+        load();
       });
+      archBox.addEventListener("change", () => {
+        archived = archBox.checked;
+        load();
+      });
+      load();
     });
   }
 
@@ -879,6 +1119,16 @@
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.register("/sw.js").catch(() => {});
   }
+
+  getJson("/api/state").then((snapshot) => {
+    const data = (snapshot && snapshot.data) || {};
+    const config = data.config || {};
+    state.attach = config.attach || [];
+    state.trace = data.trace || null;
+    attachBtn.textContent = state.attach.length ? "＋" + state.attach.length : "＋";
+    attachBtn.classList.toggle("has", state.attach.length > 0);
+    renderTrace(false);
+  });
 
   autosize();
   connect();

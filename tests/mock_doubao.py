@@ -140,6 +140,24 @@ def parse_message(argv: list) -> str:
 def main(argv: list) -> int:
     workspace = parse_workspace(argv)
 
+    if "sessions" in argv and "read" in argv:
+        out(
+            {
+                "platform": "headless",
+                "conversationId": CID,
+                "messages": [
+                    {"role": "user", "text": "历史里的问题", "messageId": "111"},
+                    {"role": "assistant", "text": "历史里的回答", "messageId": "222"},
+                ],
+            }
+        )
+        return 0
+    if "sessions" in argv and "stop" in argv:
+        out({"platform": "headless", "status": "stopped", "stopped": True})
+        return 0
+    if "sessions" in argv and "open" in argv:
+        out({"platform": "headless", "conversationId": CID})
+        return 0
     if "sessions" in argv and "list" in argv:
         out({
             "sessions": [
@@ -149,8 +167,8 @@ def main(argv: list) -> int:
             "currentId": CID,
         })
         return 0
-    if "sessions" in argv and any(item in argv for item in ("rename", "pin", "unpin", "archive", "unarchive")):
-        action = next(item for item in argv if item in ("rename", "pin", "unpin", "archive", "unarchive"))
+    if "sessions" in argv and any(item in argv for item in ("rename", "pin", "unpin", "archive", "unarchive", "move")):
+        action = next(item for item in argv if item in ("rename", "pin", "unpin", "archive", "unarchive", "move"))
         index = argv.index(action)
         cid = argv[index + 1] if index + 1 < len(argv) else ""
         title = argv[index + 2] if action == "rename" and index + 2 < len(argv) else ""

@@ -20,7 +20,7 @@ import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
 
 import core
@@ -94,7 +94,22 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"ok": True, "data": self.session.snapshot()})
             return
         if path == "/api/sessions":
-            self._json(self._list_sessions())
+            query = parse_qs(urlparse(self.path).query)
+            try:
+                limit = int((query.get("limit") or ["20"])[0])
+            except ValueError:
+                limit = 20
+            archived = (query.get("archived") or ["0"])[0].lower() in ("1", "true", "yes")
+            self._json(self._list_sessions(limit, archived))
+            return
+        if path == "/api/session/read":
+            query = parse_qs(urlparse(self.path).query)
+            conversation_id = (query.get("id") or [""])[0]
+            try:
+                limit = int((query.get("limit") or ["60"])[0])
+            except ValueError:
+                limit = 60
+            self._json(self._session_read(conversation_id, limit))
             return
         if path == "/api/models":
             self._json(self._list_models())
@@ -225,6 +240,14 @@ class Handler(BaseHTTPRequestHandler):
             profile = str(payload.get("profile") or "").strip()
             refresh = bool(payload.get("refresh"))
             self._json({"ok": True, **_login_arm(self.session.config, seconds, profile, refresh)})
+        elif path == "/api/login/cookie":
+            self._json(
+                _login_cookie(
+                    self.session.config,
+                    str(payload.get("path") or ""),
+                    str(payload.get("profile") or ""),
+                )
+            )
         elif path == "/api/login/cancel":
             self._json(_login_cancel())
         elif path == "/api/logout":
@@ -280,6 +303,39 @@ class Handler(BaseHTTPRequestHandler):
                 return {"ok": False, "error": "推理档位不合法"}
             config["reasoning"] = value
             changed = True
+        if "timeout" in payload:
+            try:
+                value = int(payload["timeout"])
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "超时必须是整数秒"}
+            if not 30 <= value <= 3600:
+                return {"ok": False, "error": "超时范围 30–3600 秒"}
+            config["timeout"] = value
+            changed = True
+        if "skills" in payload:
+            config["skills"] = bool(payload["skills"])
+            changed = True
+        if "enterprise" in payload:
+            config["enterprise"] = bool(payload["enterprise"])
+            changed = True
+        if "project" in payload:
+            config["project"] = str(payload["project"] or "").strip()
+            changed = True
+        if "mcp" in payload:
+            config["mcp"] = [str(item) for item in (payload["mcp"] or []) if str(item).strip()]
+            changed = True
+        if "expect_json" in payload:
+            config["expect_json"] = bool(payload["expect_json"])
+            changed = True
+        if "reply_schema" in payload:
+            config["reply_schema"] = str(payload["reply_schema"] or "").strip()
+            changed = True
+        if "attach" in payload:
+            config["attach"] = [str(item) for item in (payload["attach"] or []) if str(item).strip()]
+            changed = True
+        if "show_trace" in payload:
+            config["show_trace"] = bool(payload["show_trace"])
+            changed = True
         if changed:
             core.save_config(config)
             self.session.emit({"type": "snapshot", "data": self.session.snapshot()})
@@ -318,8 +374,23 @@ class Handler(BaseHTTPRequestHandler):
             argv += ["--profile", str(config["profile"])]
         return argv
 
-    def _list_sessions(self) -> dict:
-        code, stdout, stderr = self._cli(self._base_argv("sessions", "list", "--limit", "10", "--json"))
+    def _session_read(self, conversation_id: str, limit: int = 60) -> dict:
+        conversation_id = (conversation_id or "").strip()
+        if not conversation_id:
+            return {"ok": False, "error": "缺少会话 ID"}
+        limit = max(1, min(int(limit or 60), 100))
+        messages = core.read_conversation(self.session.config, conversation_id, limit)
+        if messages is None:
+            return {"ok": False, "error": "读取会话失败"}
+        return {"ok": True, "messages": messages, "conversationId": conversation_id}
+
+    def _list_sessions(self, limit: int = 20, archived: bool = False) -> dict:
+        limit = max(1, min(int(limit or 20), 100))
+        args = ["sessions", "list", "--limit", str(limit)]
+        if archived:
+            args.append("--archived")
+        args.append("--json")
+        code, stdout, stderr = self._cli(self._base_argv(*args))
         if code != 0:
             return {"ok": False, "error": (stderr or stdout or "查询失败").strip()[:200]}
         try:
@@ -337,7 +408,13 @@ class Handler(BaseHTTPRequestHandler):
                     "archived": row.get("archived") is True,
                 }
             )
-        return {"ok": True, "sessions": rows, "currentId": self.session.conversation_id}
+        return {
+            "ok": True,
+            "sessions": rows,
+            "currentId": self.session.conversation_id,
+            "limit": limit,
+            "archived": archived,
+        }
 
     def _list_models(self) -> dict:
         code, stdout, stderr = self._cli(self._base_argv("models", "--json"))
@@ -645,6 +722,59 @@ def _login_pump(proc: subprocess.Popen, config: dict) -> None:
             LOGIN["qrAt"] = 0.0
         else:
             LOGIN["detail"] = detail or "登录未完成"
+
+
+def _login_cookie(config: dict, path: str, profile: str = "") -> dict:
+    """用 Cookie 文件登录。
+
+    新设备扫码基本一定会撞 MFA（errorCode 2156），Cookie 是唯一可靠的路，
+    所以单给一个入口，不走二维码那条链路。
+    """
+    path = os.path.abspath(os.path.expanduser((path or "").strip()))
+    if not path:
+        return {"ok": False, "error": "请填写 Cookie 文件路径", **_login_snapshot()}
+    if not os.path.isfile(path):
+        return {"ok": False, "error": "Cookie 文件不存在：" + path, **_login_snapshot()}
+    with LOGIN_LOCK:
+        proc = LOGIN.get("proc")
+    if proc is not None and proc.poll() is None:
+        try:
+            proc.terminate()
+        except Exception:
+            pass
+    if profile:
+        config["profile"] = profile
+        core.save_config(config)
+    argv = [str(config["bin"])] + [str(item) for item in (config.get("binArgs") or [])]
+    argv += ["headless", "login", "--cookie-file", path, "--json"]
+    if config.get("profile"):
+        argv += ["--profile", str(config["profile"])]
+    detail = ""
+    try:
+        result = subprocess.run(argv, capture_output=True, text=True, timeout=90)
+        code = result.returncode
+        detail = _login_tail((result.stdout or "") + (result.stderr or "")) if code != 0 else ""
+    except Exception as exc:
+        code = 1
+        detail = str(exc)
+    logged_in, account = _login_status(config)
+    with LOGIN_LOCK:
+        LOGIN.update(
+            {
+                "state": "ok" if logged_in else "failed",
+                "qr": "",
+                "qrAt": 0.0,
+                "proc": None,
+                "loggedIn": bool(logged_in),
+                "accountId": account or "",
+                "probed": True,
+                "detail": "" if logged_in else (detail or "Cookie 未能登录"),
+            }
+        )
+    snapshot = _login_snapshot()
+    if not logged_in:
+        return {"ok": False, "error": detail or "Cookie 未能登录", **snapshot}
+    return {"ok": True, **snapshot}
 
 
 def _login_arm(config: dict, seconds: int, profile: str = "", refresh: bool = False) -> dict:
