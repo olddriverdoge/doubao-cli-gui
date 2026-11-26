@@ -84,6 +84,7 @@ npm i --prefix D:\PYPJ\tools\dcl doubao-cli@0.23.3
 .\.venv\Scripts\python.exe tests\test_argv.py
 .\.venv\Scripts\python.exe tests\test_api.py
 .\.venv\Scripts\python.exe tests\test_login.py
+.\.venv\Scripts\python.exe tests\test_release.py
 .\.venv\Scripts\python.exe tests\test_ui.py
 # 网关测试要先按 CI 复制页面
 Copy-Item web android\app\src\main\python\web -Recurse
@@ -109,7 +110,7 @@ DOUBAO_GUI_PORT=8766 doubao-gui start   # 换端口
 2. **Termux:Widget**：装 Termux:Widget 后，桌面小组件里点「豆包CLI」，一步起服务并跳转。
 3. 想让它开机自启：把 `doubao-gui run` 写进 `~/.termux/boot/`（需 Termux:Boot）。
 
-界面上的能力：流式消息、逐条审批（允许一次 / 本轮都允许 / 拒绝）、中止当前轮、续等（不重发消息）、切换历史会话、改工作区与权限模式、体检、落盘到本地历史。
+界面上的能力：流式消息、逐条审批（允许一次 / 本轮都允许 / 拒绝）、中止当前轮、续等（不重发消息）、切换历史会话、改工作区与权限模式、扫码登录/退出登录、体检、检查 GitHub Release、落盘到本地历史。
 
 ## 权限模式
 
@@ -133,6 +134,9 @@ DOUBAO_GUI_PORT=8766 doubao-gui start   # 换端口
 
 **登录失效**
 `doubao headless status --profile termux --json` 看 `loggedIn`。失败就重新 `doubao headless login --profile termux`。
+
+**怎么知道有没有新版**
+设置页里点「检查更新」，它走 `GET /api/release`：查 GitHub 最新 Release、比 `core.py` 里的 `VERSION`，顺手把 Release 说明和附件（APK 等）列出来；有新版时会直接给出 Termux 升级命令。结果缓存 60 秒，想跳过缓存加 `?force=1`。要指向别的镜像或自建 API，设 `DOUBAO_GUI_RELEASE_API`；缓存时长用 `DOUBAO_GUI_RELEASE_TTL` 调。
 
 **后台被杀**
 Termux 要 `termux-wake-lock`，并在系统设置里关掉 Termux 的电池优化。本项目启动时若检测到 `termux-wake-lock` 会自动调用。

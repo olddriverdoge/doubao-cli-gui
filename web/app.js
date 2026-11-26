@@ -539,6 +539,7 @@
         if (result.ok) { closeSheet(); toast("已保存"); }
       }));
       row.appendChild(button("体检", "soft", () => openDoctor()));
+      row.appendChild(button("检查更新", "ghost", () => openRelease()));
       body.appendChild(row);
 
       const danger = document.createElement("div");
@@ -591,6 +592,86 @@
           body.insertBefore(row, body.firstChild);
         });
         if ((result.checks || []).some((item) => !item.ok)) loginPanel(body);
+      });
+    });
+  }
+
+  async function openRelease() {
+    openSheet("GitHub Release", (body) => {
+      const loading = document.createElement("div");
+      loading.className = "hint";
+      loading.textContent = "正在查 GitHub 上的最新 Release…";
+      body.appendChild(loading);
+
+      const stateLine = document.createElement("div");
+      stateLine.className = "hint";
+      body.appendChild(stateLine);
+
+      const notes = document.createElement("div");
+      notes.className = "release-notes";
+      notes.hidden = true;
+      body.appendChild(notes);
+
+      const links = document.createElement("div");
+      links.className = "row";
+      body.appendChild(links);
+
+      const command = document.createElement("div");
+      command.className = "hint mono";
+      command.hidden = true;
+      body.appendChild(command);
+
+      body.appendChild(button("返回设置", "ghost", () => openSettings()));
+
+      getJson("/api/release").then((result) => {
+        loading.remove();
+        if (!result || result.ok === false) {
+          stateLine.textContent = "检查失败：" + ((result && result.error) || "网络不可用");
+          const open = document.createElement("a");
+          open.className = "btn ghost";
+          open.href = (result && result.url) || "https://github.com/olddriverdoge/doubao-cli-gui/releases";
+          open.target = "_blank";
+          open.rel = "noopener";
+          open.textContent = "在 GitHub 打开 Releases";
+          links.appendChild(open);
+          return;
+        }
+        if (result.empty) {
+          stateLine.textContent = result.hint || "仓库还没发布 Release（当前 " + result.current + "）";
+        } else {
+          stateLine.textContent = result.hasUpdate
+            ? "有新版本 " + result.latest + "（当前 " + result.current + "）"
+            : "已是最新（当前 " + result.current + " · 最新 " + (result.latest || "无") + "）";
+          if (result.hasUpdate) stateLine.className = "hint release-new";
+        }
+        if (result.publishedAt) {
+          const when = document.createElement("div");
+          when.className = "hint";
+          when.textContent = "发布于 " + String(result.publishedAt).replace("T", " ").replace("Z", " UTC");
+          body.insertBefore(when, stateLine.nextSibling);
+        }
+        if (result.notes) {
+          notes.textContent = result.notes;
+          notes.hidden = false;
+        }
+        const open = document.createElement("a");
+        open.className = "btn ghost";
+        open.href = result.url || "https://github.com/olddriverdoge/doubao-cli-gui/releases";
+        open.target = "_blank";
+        open.rel = "noopener";
+        open.textContent = "打开 Release";
+        links.appendChild(open);
+        (result.assets || []).forEach((asset) => {
+          const link = document.createElement("a");
+          link.className = "btn ghost";
+          link.href = asset.url || "#";
+          link.textContent = "下载 " + (asset.name || "附件");
+          links.appendChild(link);
+        });
+        if (result.hasUpdate) {
+          command.textContent = "Termux 升级：cd ~/doubao-cli-gui && git pull --ff-only && bash install.sh";
+          command.hidden = false;
+        }
       });
     });
   }

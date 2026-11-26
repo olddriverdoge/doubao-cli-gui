@@ -19,7 +19,9 @@ import threading
 import time
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 import core
 import login_qr
@@ -103,6 +105,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/login":
             _login_ensure_probe(self.session.config)
             self._json({"ok": True, **_login_snapshot()})
+            return
+        if path == "/api/release":
+            force = "force=1" in (urlparse(self.path).query or "")
+            self._json(_release_check(force=force))
             return
         self._static(path)
 
@@ -380,6 +386,103 @@ class Handler(BaseHTTPRequestHandler):
 
 
 # -- 扫码登录
+
+RELEASE_API = os.environ.get("DOUBAO_GUI_RELEASE_API") or (
+    "https://api.github.com/repos/olddriverdoge/doubao-cli-gui/releases/latest"
+)
+RELEASE_URL = "https://github.com/olddriverdoge/doubao-cli-gui/releases"
+RELEASE_TTL = float(os.environ.get("DOUBAO_GUI_RELEASE_TTL") or "60")
+RELEASE_LOCK = threading.Lock()
+RELEASE_CACHE: dict = {}
+
+
+def _version_key(text: str) -> tuple:
+    """把 v0.1.9 / 0.1.9-beta 之类压成可比较的数字元组。"""
+    return tuple(int(item) for item in re.findall(r"\d+", text or "")[:4])
+
+
+def _release_fetch() -> dict:
+    request = Request(RELEASE_API)
+    request.add_header("Accept", "application/vnd.github+json")
+    request.add_header("User-Agent", "doubao-cli-gui")
+    with urlopen(request, timeout=8) as response:
+        body = response.read().decode("utf-8", "replace")
+    return json.loads(body or "{}")
+
+
+def _release_payload(data: dict, now: float) -> dict:
+    current = str(core.VERSION)
+    latest = str(data.get("tag_name") or data.get("name") or "").strip()
+    assets = []
+    for item in data.get("assets") or []:
+        if not isinstance(item, dict):
+            continue
+        assets.append(
+            {
+                "name": str(item.get("name") or ""),
+                "size": item.get("size") or 0,
+                "url": str(item.get("browser_download_url") or ""),
+            }
+        )
+    return {
+        "ok": True,
+        "current": current,
+        "latest": latest,
+        "latestName": str(data.get("name") or ""),
+        "publishedAt": str(data.get("published_at") or ""),
+        "url": str(data.get("html_url") or RELEASE_URL),
+        "notes": str(data.get("body") or "")[:800],
+        "hasUpdate": bool(_version_key(latest) > _version_key(current)),
+        "assets": assets[:6],
+        "checkedAt": int(now),
+    }
+
+
+def _release_check(force: bool = False) -> dict:
+    now = time.time()
+    with RELEASE_LOCK:
+        cached = RELEASE_CACHE.get("payload")
+        if cached and not force and now - float(RELEASE_CACHE.get("at") or 0) < RELEASE_TTL:
+            return dict(cached, cached=True)
+    try:
+        payload = _release_payload(_release_fetch(), now)
+    except HTTPError as exc:
+        if int(getattr(exc, "code", 0) or 0) == 404:
+            payload = {
+                "ok": True,
+                "current": str(core.VERSION),
+                "latest": "",
+                "latestName": "",
+                "publishedAt": "",
+                "url": RELEASE_URL,
+                "notes": "",
+                "hasUpdate": False,
+                "assets": [],
+                "empty": True,
+                "hint": "仓库还没发布 Release，先去 Releases 页看看，或者直接 git pull",
+                "checkedAt": int(now),
+            }
+        else:
+            payload = {
+                "ok": False,
+                "error": f"取不到 Release：{exc}",
+                "current": str(core.VERSION),
+                "url": RELEASE_URL,
+                "checkedAt": int(now),
+            }
+    except (URLError, json.JSONDecodeError, OSError, ValueError) as exc:
+        payload = {
+            "ok": False,
+            "error": f"取不到 Release：{exc}",
+            "current": str(core.VERSION),
+            "url": RELEASE_URL,
+            "checkedAt": int(now),
+        }
+    with RELEASE_LOCK:
+        RELEASE_CACHE["payload"] = payload
+        RELEASE_CACHE["at"] = now
+    return dict(payload, cached=False)
+
 
 LOGIN_LOCK = threading.Lock()
 LOGIN = {

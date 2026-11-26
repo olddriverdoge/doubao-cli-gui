@@ -388,3 +388,23 @@ html, body {
   text-align: center;
   color: var(--warn);
 }
+
+/* GitHub Release */
+.release-notes {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--muted);
+  max-height: 38vh;
+  overflow: auto;
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.release-new {
+  color: var(--accent);
+  font-weight: 500;
+}
