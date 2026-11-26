@@ -182,7 +182,11 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         payload = self._read_json()
         if path == "/api/send":
-            self._json(self.session.send(str(payload.get("text") or "")))
+            try:
+                result = self.session.send(str(payload.get("text") or ""))
+            except Exception as exc:  # 兜底：接口异常也要回结构化错误
+                result = {"ok": False, "error": str(exc)}
+            self._json(result)
         elif path == "/api/approve":
             self._json(
                 self.session.approve(

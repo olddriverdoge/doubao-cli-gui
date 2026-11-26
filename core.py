@@ -29,7 +29,7 @@ from typing import Callable, Dict, List, Optional
 
 import term_io
 
-VERSION = "0.1.5"
+VERSION = "0.1.6"
 
 CONFIG_DIR = os.path.join(
     os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config"), "doubao-cli-gui"
@@ -193,8 +193,15 @@ class Runner:
         Windows 上 npm 装出来的 `doubao` 是 .cmd 脚本，ConPTY 直接起不来，
         所以支持配置成 `node.exe <cli.js>` 这种形式。
         """
-        prefix = [str(self.config["bin"])] + [str(item) for item in (self.config.get("binArgs") or [])]
-        return prefix + list(args)
+        bin_path = str(self.config["bin"])
+        bin_args = [str(item) for item in (self.config.get("binArgs") or [])]
+        base = os.path.basename(bin_path).lower()
+        if not bin_args and base in ("python.exe", "python", "python3", "py", "python3.exe", "py.exe"):
+            raise RuntimeError(
+                "配置的 bin 是 Python 解释器但没有 binArgs，命令行会变成 `python headless ...`。"
+                "请用 --bin-arg 指定要运行的脚本（例如 --bin-arg tests/mock_doubao.py）。"
+            )
+        return [bin_path] + bin_args + list(args)
 
     def _local_flags(self) -> List[str]:
         """本地运行时相关参数。
@@ -586,6 +593,8 @@ class Session:
             "messages": self.messages,
             "version": VERSION,
             "config": {
+                "bin": self.config.get("bin"),
+                "binArgs": list(self.config.get("binArgs") or []),
                 "workspace": self.config.get("workspace"),
                 "model": self.config.get("model"),
                 "reasoning": self.config.get("reasoning"),
@@ -636,12 +645,25 @@ class Session:
         self.started_at = time.time()
         self.approval = None
         self.emit(self._status_event())
-        if self.conversation_id:
-            argv = self.runner.build_send(self.conversation_id, text)
-            label = "send"
-        else:
-            argv = self.runner.build_create(text)
-            label = "create"
+        try:
+            if self.conversation_id:
+                argv = self.runner.build_send(self.conversation_id, text)
+                label = "send"
+            else:
+                argv = self.runner.build_create(text)
+                label = "create"
+        except RuntimeError as exc:
+            # 命令拼不出来（例如 bin 指向解释器却漏了 binArgs）：干净地回到空闲，
+            # 把原因交给界面提示，而不是让异常把连接打断。
+            if (self.messages and self.messages[-1].get("role") == "user"
+                    and self.messages[-1].get("text") == text):
+                self.messages.pop()
+                self._save_history()
+            self.status = "idle"
+            self.phase = "空闲"
+            self.started_at = None
+            self.emit(self._status_event())
+            return {"ok": False, "error": str(exc)}
         turn = self.runner.start(argv, label)
         if turn is None:
             self.status = "idle"
